@@ -533,7 +533,7 @@ function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolean {
   // pi keeps its footer under every dialog — the pane's folder, then its context meter — so the
   // hint sits near the end without being it. A dialog already answered leaves its hint far
   // above whatever came after, which is what keeps this window narrow.
-  if (prompt.responder === "pi-model") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, PI_FOOTER_LINES);
+  if (prompt.responder === "pi-model" || prompt.responder === "pi-thinking") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, PI_FOOTER_LINES);
   if (prompt.responder === "omo-model") return omoModelListWaits(screen);
   // its reader already found the picker ending the screen, which only an open picker does
   if (prompt.responder === "omp-model") return true;
