@@ -88,7 +88,7 @@ describe("pi's builtins", () => {
     ]);
     expect(source.forms?.["thinking"]).toEqual([
       { match: "bare", interaction: "dialog", dialog: "pi-thinking" },
-      { match: { sub: "*" }, interaction: "none" },
+      { match: "other", interaction: "none" },
     ]);
   });
 
