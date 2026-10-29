@@ -4676,6 +4676,62 @@ describe("repository diff of a pane's folder", () => {
 });
 
 describe("GET /api/sessions/history", () => {
+  it("streams Pi labels past the old head bound and follows appended renames/clears without changing resume IDs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-pi-history-contract-"));
+    const project = join(root, "project");
+    mkdirSync(project);
+    const cwd = realpathSync(project);
+    const store = join(root, "sessions");
+    const { piSessionFolder } = await import("./session-history.ts");
+    const folder = join(store, piSessionFolder(cwd));
+    mkdirSync(folder, { recursive: true });
+    const file = join(folder, "fixture.jsonl");
+    const line = (value: unknown) => `${JSON.stringify(value)}\n`;
+    const initial = line({ type: "session", version: 3, id: "pi-history-fixture", cwd })
+      + line({ type: "message", message: { role: "system", content: "s".repeat(100 * 1024) } })
+      + line({ type: "message", message: { role: "user", content: [{ type: "text", text: "Late" }, { type: "text", text: "prompt" }] } })
+      + line({ type: "session_info", name: " Late name " });
+    writeFileSync(file, initial);
+    const previous = process.env["PI_CODING_AGENT_SESSION_DIR"];
+    process.env["PI_CODING_AGENT_SESSION_DIR"] = store;
+    const created = await workspaceCreate({ cwd, label: "ovis-test-pi-history" });
+    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: join(root, "state") });
+    try {
+      const url = `http://127.0.0.1:${app.port}/api/sessions/history?workspace_id=${encodeURIComponent(created.workspace.workspace_id)}&agent=pi`;
+      const listing = async () => {
+        const response = await fetch(url);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        return ((await response.json()) as SessionHistoryResponse).sessions;
+      };
+      expect(await listing()).toMatchObject([{ title: "Late name", firstMessage: "Late prompt", resume: { argv: ["pi", "--session", "pi-history-fixture"] } }]);
+      writeFileSync(file, initial + line({ type: "session_info", name: "Renamed" }));
+      expect((await listing())[0]?.title).toBe("Renamed");
+      writeFileSync(file, initial + line({ type: "session_info", name: " " }));
+      expect((await listing())[0]).toMatchObject({ title: null, firstMessage: "Late prompt" });
+      // A fresh streaming read has no old 16 MiB per-turn cutoff or cached continuation.
+      const block = line({ type: "message", message: { role: "system", content: "s".repeat(1024 * 1024) } });
+      for (let n = 0; n < 17; n++) appendFileSync(file, block);
+      appendFileSync(file, line({ type: "session_info", name: "After bounded scan" }));
+      expect((await listing())[0]).toMatchObject({ title: "After bounded scan", firstMessage: "Late prompt" });
+      // Reader deadline/admission behavior has isolated unit coverage; check its actual HTTP envelope here.
+      const { PiSessionReader, PiMetadataBusy } = await import("./pi-session-metadata.ts");
+      const refusedRead = spyOn(PiSessionReader.prototype, "read").mockRejectedValueOnce(new PiMetadataBusy());
+      try {
+        const busy = await fetch(url);
+        expect(busy.status).toBe(503);
+        expect(busy.headers.get("retry-after")).toBe("1");
+        expect(busy.headers.get("cache-control")).toBe("no-store");
+        expect(await busy.json()).toMatchObject({ error: { code: "session_history_busy" } });
+      } finally { refusedRead.mockRestore(); }
+    } finally {
+      app.stop();
+      if (previous === undefined) delete process.env["PI_CODING_AGENT_SESSION_DIR"]; else process.env["PI_CODING_AGENT_SESSION_DIR"] = previous;
+      await workspaceClose(created.workspace.workspace_id);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it("lists a workspace folder's Codex sessions from the server's store, newest first, and none a link puts outside it", async () => {
     const root = mkdtempSync(join(tmpdir(), "ovis-session-history-contract-"));
     const project = join(root, "project");

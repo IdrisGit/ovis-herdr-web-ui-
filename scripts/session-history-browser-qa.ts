@@ -15,7 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
@@ -24,6 +24,8 @@ import type {} from "./session-history-fixture.tsx";
 import { CLAUDE_OTHER, CLAUDE_ROWS, CLAUDE_SHARED, CLAUDE_STORE_KEY, OLDER_SESSION, SESSION_ROWS } from "./session-history-fixture-data.ts";
 import { chromePath } from "./chrome-path.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
+import { listSessions, piSessionFolder } from "../server/session-history.ts";
+import { PiSessionReader } from "../server/pi-session-metadata.ts";
 const repo = join(import.meta.dir, "..");
 const root = mkdtempSync(join(tmpdir(), "herdr-session-history-browser-"));
 const evidence = join(process.env.UI_EVIDENCE_DIR || join(repo, "evidence"), "session-history");
@@ -47,6 +49,21 @@ const heldLists = new EventEmitter();
 /** how the bridge answers the next resumes: start it, name a pane already showing it, refuse a changed store or one a new tab would not keep, or have no route */
 let resumeAnswer: "created" | "opened" | "stale" | "unsupported" | "changed" | "missing" = "created";
 const closedSources = new Set<string>();
+const piReader = new PiSessionReader();
+const piStore = join(root, "pi-sessions");
+const piFolder = join(piStore, piSessionFolder("/fixture/w1"));
+mkdirSync(piFolder, { recursive: true });
+const piNamed = join(piFolder, "named.jsonl");
+const piLine = (value: unknown) => `${JSON.stringify(value)}\n`;
+const piHeader = (id: string) => piLine({ type: "session", version: 3, id, cwd: "/fixture/w1" });
+const piSystem = piLine({ type: "message", message: { role: "system", content: "s".repeat(100 * 1024) } });
+writeFileSync(piNamed, piHeader("pi-named") + piSystem + piLine({ type: "message", message: { role: "user", content: "Named Pi first prompt" } }) + piLine({ type: "session_info", name: "Deep Pi name" }) + piSystem);
+utimesSync(piNamed, 1_790_000_002, 1_790_000_002);
+const piUnnamed = join(piFolder, "unnamed.jsonl");
+writeFileSync(piUnnamed, piHeader("pi-unnamed") + piSystem + piLine({ type: "message", message: { role: "user", content: [{ type: "text", text: "Late Pi" }, { type: "text", text: "prompt" }] } }));
+utimesSync(piUnnamed, 1_790_000_001, 1_790_000_001);
+let piBusy = false;
+const piRetry = "Pi sessions could not be read right now. Try again.";
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 const refusal = (code: string, message: string, status: number) => json({ error: { code, message } }, status);
 /** every bounded animation (the sheet's rise) over, then two frames; a looping one (a breathing status dot) never finishes and is not waited for */
@@ -77,7 +94,13 @@ try {
         const sessions = CLAUDE_ROWS.map((row) => workspaceId === "w3" && paneId !== null && row.resume ? { ...row, resume: { ...row.resume, source: { pane_id: paneId, store_key: CLAUDE_STORE_KEY } } } : row);
         return json({ workspace_id: workspaceId, agent: "claude", cwd: `/fixture/${workspaceId}`, sessions } satisfies SessionHistoryResponse);
       }
-      const answer: SessionHistoryResponse = { workspace_id: workspaceId, agent: agent as SessionHistoryResponse["agent"], cwd: `/fixture/${workspaceId}`, sessions: agent === "codex" ? SESSION_ROWS : [] };
+      if (agent === "pi" && piBusy) {
+        const response = refusal("session_history_busy", piRetry, 503);
+        response.headers.set("retry-after", "1");
+        return response;
+      }
+      const sessions = agent === "pi" ? await listSessions("pi", `/fixture/${workspaceId}`, { home: root, env: { PI_CODING_AGENT_SESSION_DIR: piStore }, piReader }) : agent === "codex" ? SESSION_ROWS : [];
+      const answer: SessionHistoryResponse = { workspace_id: workspaceId, agent: agent as SessionHistoryResponse["agent"], cwd: `/fixture/${workspaceId}`, sessions };
       return json(answer);
     }
     if (path === "/api/sessions/resume") {
@@ -143,12 +166,44 @@ try {
   console.log("PASS workspace menu item, newest-first rows, no button without a verified resume");
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
+  // Real Pi metadata from synthetic transcripts, not hand-picked titles: late names, a prompt
+  // after a huge system record, freshly read renames/clears and the retryable scan error's existing UI.
+  piBusy = true;
+  await page.evaluate(() => window.qa.openHistory("w1", "pi", "p1"));
+  await dialog.getByRole("alert").filter({ hasText: piRetry }).waitFor();
+  assert.equal(await dialog.locator(".session-row").count(), 0, "an incomplete scan is an explicit retry, never UUID/empty rows");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  piBusy = false;
+  const openPi = async () => {
+    await page.evaluate(() => window.qa.openHistory("w1", "pi", "p1"));
+    await dialog.locator(".session-row").first().waitFor();
+  };
+  await openPi();
+  assert.deepEqual(await dialog.locator(".session-title").allTextContents(), ["Deep Pi name", "Late Pi prompt"]);
+  assert.equal(await dialog.locator(".session-id").count(), 0);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  appendFileSync(piNamed, piLine({ type: "session_info", name: "Renamed Pi" }));
+  await openPi();
+  assert.equal(await dialog.locator(".session-title").first().textContent(), "Renamed Pi");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  appendFileSync(piNamed, piLine({ type: "session_info", name: " " }));
+  await openPi();
+  assert.deepEqual(await dialog.locator(".session-title").allTextContents(), ["Named Pi first prompt", "Late Pi prompt"]);
+  assert.equal(await dialog.locator(".session-id").count(), 0);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  console.log("PASS Pi late names/first-prompt fallback, fresh rename/clear, and retryable scan error");
   // the keyboard alone: the row's context-menu key, the item, the first row's button focused, arrows
   // along the rows, Tab inside, Escape closing with the focus back on the row
   await row("w1").focus();
   await contextMenuKey(page);
   const keyMenu = page.getByRole("menu");
   await keyMenu.waitFor();
+  // RowMenu places its initial focus in an animation frame; let it finish before choosing another item.
+  await settled(page);
   await keyMenu.getByRole("menuitem", { name: "Earlier sessions…", exact: true }).focus();
   await page.keyboard.press("Enter");
   await dialog.waitFor();
@@ -492,5 +547,7 @@ try {
   releases.forEach((release) => release());
   await browser?.close();
   server?.stop(true);
+  piReader.close();
+  await piReader.idle();
   rmSync(root, { recursive: true, force: true });
 }
