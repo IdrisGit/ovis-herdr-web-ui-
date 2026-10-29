@@ -1,163 +1,138 @@
 # Handoff: Pi Earlier sessions labels
 
-## Start with the user's testing findings
+## Current state
 
-**The user has new manual-testing findings and will share them with the next agent. They are not
-recorded in this handoff or the report because their details have not been supplied yet.**
+- Checkout: `/home/idris/Dev/oss/ovis-herdr-web-ui-`, branch **`fix/pi-session-labels`**.
+- Original continuation HEAD: **`6812d134`**. Latest application/test commit:
+  **`6aca06091b7d0ce6986a0953ee8cd5d807187b85`** — `fix(session-history): scan Pi label string spans in bulk`.
+  The following documentation commit updates this handoff and the report; consult `git log`.
+- The existing implementation and review fixes were preserved, not restarted.
+- The branch remains local, with no configured upstream. No push, PR, merge, tag, installed-service
+  change, user-preview restart or live-pane automation occurred. Publication requires permission.
+- Read [PI_RESUME_SESSION_NAMES_REPORT.md](PI_RESUME_SESSION_NAMES_REPORT.md), plus `AGENTS.md`,
+  `server/AGENTS.md`, `src/AGENTS.md`, `CONTRIBUTING.md`, `.github/REVIEW.md` and
+  `docs/development.md` before further work. Check `git status` for later user/session changes.
 
-Ask for those findings before changing code. Obtain the actual symptom, expected behavior,
-reproduction steps, laptop OS, Pi version, app URL/build, and which PC ran the Ovis backend.
-A laptop browser reads the backend PC's sessions, not necessarily the laptop's. Do not assume the
-user tested this branch or diagnose a cause before checking that context. Request only sanitized
-metadata needed for reproduction, not whole private transcripts.
+## Manual findings are now supplied; original-store retest is pending
 
-Read [PI_RESUME_SESSION_NAMES_REPORT.md](PI_RESUME_SESSION_NAMES_REPORT.md) for the investigation,
-current design, review history and verification. The original cached-reader plan is superseded.
+The user supplied `/home/idris/Videos/2026-10-29 23-02-08.mp4` and confirmed the tested build was
+`6812d134`, with browser/backend/store on **this laptop**, Pi **1.4.0**, and no additional symptoms
+beyond the video. `/etc/os-release` identifies the laptop as **Omarchy Linux 4.0.6**, x86_64.
+The recorded URL is `http://127.0.0.1:17318`.
 
-## Repository and branch state
+Observed sequence:
 
-- Checkout on this PC: `/home/idris/Dev/oss/ovis-herdr-web-ui-`.
-- Continue on **`fix/pi-session-labels`**, not `main`; preserve the existing commits.
-- Feature base: `e604183814d0293b51c192122c256e4c46288fb5`.
-- Latest application/test commit at handoff: **`3c9f0b51`**. A subsequent documentation commit
-  contains this handoff and the updated report; consult `git log` for the current HEAD.
-- The branch is local and has no configured upstream. This session did not push, open a PR,
-  merge, tag a release, or change the installed/main app. Do not tell the laptop user to fetch
-  this branch from GitHub until it has actually been published or transferred.
-- All session changes, including the previously untracked report, are committed for this handoff.
-  Check `git status` first in case the user or another session changed anything afterward.
+1. Chat `/resume` for Ovis's folder lists readable session labels (~10–13 s).
+2. Switch to openwhispr, open Chat `/resume`, select Pi: “Reading sessions…” becomes
+   **“Pi sessions could not be read right now. Try again.”** (~20–24 s).
+3. Switch that pane to Terminal and use native `/resume`: readable entries and a **202-session**
+   count appear (~28–31 s).
 
-Commit order:
+**Do not claim the private-store failure is resolved.** Synthetic fixtures reproduce an aggregate
+scan timeout and now pass, but no private transcript was scanned/copied for this continuation and
+no post-fix manual retry has been reported. A count of 202 does not establish the user's byte sizes
+or prove which retryable failure occurred. The video was only inspected; its text/media are not
+regression fixtures or repository artifacts.
 
-1. `2cfc5500` — `fix(session-history): stream native Pi session labels`
-2. `402dc5ce` — `test(session-history): cover Pi history API and browser behavior`
-3. `ce637646` — `docs(session-history): document Pi label scanning limits`
-4. `b3da3794` — `fix(session-history): cancel checked opens before further I/O`
-5. `3c9f0b51` — `test(session-history): guarantee API fixture cleanup on failure`
-6. Documentation/handoff commit after those; its message identifies it without a self-referential hash.
+## Scoped follow-up correction
 
-## Required instructions and decisions
+The new owned 202-session fixture places about 200 MiB in the newest 50 files. Before the correction,
+it fails at the unchanged two-second deadline with `PiMetadataBusy` (about 2.17 s test duration).
+The old single-20-MiB regression passes and did not cover this aggregate workload.
 
-Read `AGENTS.md`, `server/AGENTS.md`, `src/AGENTS.md`, `CONTRIBUTING.md`, `.github/REVIEW.md`, and
-`docs/development.md` before editing or running QA.
+`server/pi-session-label.ts` formerly iterated every ordinary string character in JavaScript,
+including ignored system prompts, extension state and tool output. It now validates ordinary spans
+in the regexp engine within the current read chunk. Quotes, escapes, raw control characters and
+UTF-8 still receive full validation, including beyond clipped metadata and inside ignored fields.
+This is a small parser optimization, not a reader redesign.
 
-- **Keep the approved uncached design.** Other agents' Earlier sessions listings read fresh metadata;
-  the user explicitly removed the Pi-only result cache and accepts rescanning. Do not restore an
-  LRU, append/prefix cache, retained retry checkpoints or single-flight answers without agreement.
-- Pi label priority: latest trimmed `session_info.name`; a blank name clears it; otherwise first
-  usable user text. Pi `text` blocks join with spaces. Preserve the existing row/resume/UI contract.
-- Preserve canonical containment, regular-file and bigint identity checks, checked descriptors,
+The 202-session regression now passes in about **0.55–0.63 s total**, including fixture setup/cleanup
+and **two fresh listings**. It counts both complete scans, checks newest-first IDs/readable labels,
+64 KiB reads and released resources. The isolated real API also lists a similarly sized store and
+sees an appended rename on reopening. New boundary/control tests preserve validation and clipping.
+These are local test durations, not arbitrary-store latency guarantees.
+
+## Required decisions and invariants
+
+- **Keep the explicitly approved uncached design.** No LRU, prefix hash, append checkpoint, retained
+  retry progress, shared in-flight answer or background scan without discussing a concrete need.
+- Latest trimmed `session_info.name` wins; blank clears it; otherwise first usable user text.
+  Pi `text` blocks join with spaces; no extension `title` fallback. Preserve the row/resume contract.
+- Keep canonical containment, regular-file/bigint identity checks, checked descriptors,
   nonblocking/no-follow opens, permissions, other agents' 64 KiB head bounds, sorting and row limits.
-- Synthetic tests only: owned temporary stores/state, isolated herdr, loopback `port: 0` servers.
-  Never use the user's saved transcripts as fixtures or mutate their live herdr panes/session.
-- Follow the project's verified-PR workflow when publication is authorized. Do not push, merge,
-  modify installed services, or create release tags merely to complete this handoff task.
+- Keep two active readers, 32 waiting tasks, 64 KiB chunks and independent two-second listing
+  deadlines. Very large/slow or changing files can still fail; retrying starts over, not from cache.
+- Failed/incomplete scans return 503 `session_history_busy`, `Retry-After: 1`,
+  `Cache-Control: no-store`, never missing-label/partial rows presented as success.
+- Task cancellation reaches inside raw-open and identity-stat callbacks; outstanding filesystem
+  calls keep their descriptor/slot until safe cleanup. Never reopen an unchecked path.
+- Fixtures use owned temporary stores/state, loopback `port: 0` servers and the isolated check runner.
+  Never mutate live user panes, copy private transcripts into fixtures or modify installed services.
 
-## Implementation map
+## Latest verification and limitations
 
-- `server/pi-session-label.ts`: bounded incremental JSONL projection and EOF decoder finalization.
-  No whole-record/transcript buffering, manual UTF-8-tail detector, or persistent parser checkpoint.
-- `server/pi-session-metadata.ts`: fresh scans, two active readers/32 waiting tasks, 64 KiB chunks,
-  independent two-second listing deadlines, task-owned `checkActive`, descriptor cleanup and stop.
-- `server/session-history.ts`: Pi-only async listing, discovery/eligibility/ordering and
-  `openPiChecked`. The cancellation guard is propagated inside raw open and identity-stat steps.
-- `server/session-history-routes.ts`: permission checks and ordinary retryable 503 error envelope.
-- `server/index.ts`: per-server reader creation, route wiring and shutdown.
-- `server/pi-session-metadata.test.ts`: native naming, bounded parsing, freshness, actual filesystem
-  callback cancellation/error regressions, gate cleanup and 20 MiB responsiveness.
-- `server/session-history.test.ts`: existing provider bounds, paths, identities, cwd/version/ID rules
-  and synchronous/non-Pi versus asynchronous/Pi listing behavior.
-- `server/api.contract.test.ts`: `withPiHistoryFixture`, real HTTP checks and four fixture failure
-  injections (workspace creation, server creation, server stop, workspace close).
-- `scripts/session-history-browser-qa.ts`: real session-list components fed synthetic Pi transcripts,
-  names/prompt fallback, rename/clear, busy errors and existing resume/menu behavior.
-- `shared/session-history.ts`, `src/lib/api.ts`, `docs/development.md`: contract/policy documentation.
-- `changelog.d/pi-session-labels.md`: existing user-visible fix fragment; do not edit CHANGELOG.md.
+Clean **`6aca0609`**, checked serially under the isolated runner with a fresh build:
 
-### Resource/failure tradeoffs
+- **129 targeted unit tests passed.**
+- **Seven history API contract tests passed**, including the large store and all four fixture failure paths.
+- **Session-history browser regression passed**, with existing rename/clear/error/resume/permission coverage.
+- Runner report: `node_modules/.cache/check/1bd99426-c615-4038-9751-b611557f8ea0/report.json`.
+  Source unchanged; fingerprint `0e9926fe59649a1c116b9f19709f4333c1e00c4234f92e188b9c5e3649c3fde4`.
+  The runner ended test-command processes; no cleanup errors or retained state remain.
 
-Each listing reads fresh metadata. A very large or slow store can exceed the two-second metadata
-budget; retrying starts from zero, not from saved progress. Return 503 `session_history_busy` with
-`Retry-After: 1` and `Cache-Control: no-store`, not partial/UUID-only rows from an unfinished scan.
-Only filesystem operations already issued may finish after cancellation; their descriptor/slot is
-retained until safe cleanup. No unchecked path is reopened. Coarse timestamps can still hide a
-same-tick in-place rewrite from the final snapshot check.
+**Fast checks are still not green.** Rerun result: **8,673 unit passes, 35 skips, one unchanged
+failure in `scripts/install-node-fallback.test.ts:299`**. Its supposed Node-free `/usr/bin:/bin`
+fixture finds system Node, so it expects `[ node]` but gets `[]`. It was not fixed, skipped or hidden.
+Workflow syntax, generated types/themes, typecheck and build passed.
 
-## Latest verification and its limits
+Fast report: `node_modules/.cache/check/fc24da82-db10-483b-acb7-c831e9678736/report.json`, recording
+`6812d134` plus the exact five-file diff committed as `6aca0609`, unchanged during execution;
+fingerprint `8c330de5d0882bde3d392f08dda44d042f82e58e7ebc9de52cdbefa76cfdd9d0`.
+The report/handoff update after `6aca0609` is documentation only, outside the clean-commit run.
+Reports are machine-local artifacts, not committed or guaranteed to transfer.
 
-Final application/test contents were verified before commits 4/5 and these handoff documents:
+Host: Bun 1.4.4, herdr 0.9.5, Node 26.7.0 (CI pins Node 22; runner warns). No native macOS/Windows
+or complete integration/browser lane was run for this scoped continuation. `git diff --check` passed.
 
-- **126 targeted unit tests passed.**
-- **Six isolated history contract tests passed**, including all four fixture failure paths.
-- **Session-history browser regression passed.**
-- Syntax, generated-file freshness, typecheck, build and `git diff --check` passed.
-- **Full fast checks failed:** 8,670 unit passes, 35 skips, one known unrelated failure in unchanged
-  `scripts/install-node-fallback.test.ts:299`. Its supposed Node-free `/usr/bin:/bin` fixture finds
-  this PC's system Node, so it expects `[ node]` but gets `[]`. It reproduces alone; it was not
-  fixed, skipped or hidden. Do not claim a fully green fast check.
+## Implementation and review map
 
-Verification host: Linux/Bun 1.4.4; the runner warned that Node 26.7.0 differs from CI's Node 22.
-The reports below record `ce637646` plus the pre-commit working diff and unchanged source during
-execution. They do not establish a fresh verification identity for the subsequent commits/docs.
-New code edits require new verification; run the required checks again before any push.
+- `server/pi-session-label.ts`: bounded incremental JSONL projection, bulk ordinary-string validation,
+  EOF decoder finalization. No whole-record/transcript buffering or persistent checkpoints.
+- `server/pi-session-metadata.ts`: fresh scans, reader admission/deadlines, cancellation and cleanup.
+- `server/session-history.ts`: Pi-only async listing and `openPiChecked`; other agents remain unchanged.
+- `server/session-history-routes.ts`, `server/index.ts`: permissions, error envelope, per-server lifecycle.
+- `server/pi-session-metadata.test.ts`: native semantics, bulk validation boundaries, aggregate scans,
+  freshness, actual filesystem callback cancellation/errors, resource cleanup and responsiveness.
+- `server/session-history.test.ts`: provider bounds, paths/identities, eligibility and ordering.
+- `server/api.contract.test.ts`: `withPiHistoryFixture`, real HTTP checks, aggregate store and four cleanup failures.
+- `scripts/session-history-browser-qa.ts`: unchanged real-component coverage with synthetic Pi metadata.
+- `docs/development.md`, `changelog.d/pi-session-labels.md`: policy and user-visible notes.
 
-Machine-local, uncommitted artifacts (may not exist on a laptop or later session):
+Commit sequence before the new correction: `2cfc5500`, `402dc5ce`, `ce637646`, `b3da3794`,
+`3c9f0b51`, `6812d134`. The report preserves their investigation and review history.
+The last independent review covered through `ce637646`; its opener-cancellation and fixture-cleanup
+findings were fixed in `b3da3794`/`3c9f0b51`. Neither those fixes nor `6aca0609` have received a later
+independent review. No new delegation/review was requested for this continuation.
 
-- Isolated pass: `node_modules/.cache/check/c70abdb1-b2ce-4fc4-ad6b-13cebd3ac4a5/report.json`.
-- Fast failure: `node_modules/.cache/check/e4e32378-9efb-4857-bda8-97df76907c0f/report.json`.
-- Source fingerprint of those runs:
-  `e8ec81171e6317fe0058092f5a6ccf2c8a733dda7ce697a704b7f933ed457773`.
-- Supplemental research/negative-control record: `/tmp/ovis-pi-label-fix-validation/RESULTS.md`.
-  Disabling only guard propagation made the raw-open cancellation tests reproduce the extra stat.
+## Next action
 
-### Useful commands
+Have the user restart their **manually started throwaway backend from this branch**, not the
+installed app or always-on main service, and repeat the video's openwhispr Chat `/resume` flow.
+Reloading the browser does not update a backend still running `6812d134`. Record the result before
+claiming the observed issue resolved. If it still fails, get sanitized aggregate metadata or explicit
+authorization for a read-only diagnosis; do not invent a new symptom or silently introduce caching.
 
-Run serially in the checkout; do not overlap builds/generated-file checks with other writers:
+If further code changes are needed, repeat the affected checks serially:
 
 ```bash
 bun test server/pi-session-metadata.test.ts server/session-history.test.ts --timeout 30000
-bun run typecheck
 bun run check run bun test --timeout 15000 ./server/api.contract.test.ts --test-name-pattern 'GET /api/sessions/history'
 bun run check run --build bun scripts/session-history-browser-qa.ts
 bun run check fast
 git diff --check
 ```
 
-The `check run` wrapper owns its herdr/config/state and teardown. If Chromium is missing, follow
-`docs/development.md` rather than using a personal browser profile. Read each check report's
-status/source identity and retained-process errors, not only its exit code.
-
-## Review status
-
-The last independent four-lane xhigh review covered `e6041838..ce637646`. It found the nested
-production-opener cancellation issue and the API fixture cleanup issue; commits 4/5 address them
-with targeted regressions. **No independent reviewer pass has run on commits 4/5 afterward.**
-
-Reviewer profiles here have read/search tools but no shell/Git. If the user asks for another
-committed-range review, supply a complete readable diff artifact with the exact base/head and
-changed-file list upfront. Do not let reviewers mistake a clean working-tree diff for the range,
-or claim that they ran Git/tests when they could only inspect supplied evidence.
-
-## Manual QA / laptop status
-
-- No preview server was left running by this session. No laptop setup or code transfer was performed.
-- The normal installed/main app does not automatically serve this local unpublished branch.
-- A preview started by an agent for the user to open must follow `AGENTS.md`: bind this PC's
-  Tailscale IPv4 on an unused port with separate app state, not `0.0.0.0` or an existing installed
-  service port. Do not stop the always-on main app. An installed cross-device app needs HTTPS.
-- If the user instead runs the backend on the laptop, it needs the actual branch code including
-  commits 4/5 and reads that laptop's Pi store. Use `bun run server`, not the updating `start` mode.
-- Ask which of these arrangements produced the new findings; do not assume one.
-
-## Continuation checklist
-
-1. Confirm checkout/branch/status and read the required guidance plus both root documents.
-2. Obtain the user's new findings; distinguish observations from hypotheses and verify the tested
-   build/backend/store context.
-3. Reproduce the exact issue with owned/synthetic state where possible. Do not overwrite private
-   session files or drive live panes to manufacture a reproduction.
-4. Make a scoped correction and regression coverage while preserving the approved design unless
-   the user explicitly changes it.
-5. Rerun affected unit/isolated contract/browser checks; run fast checks and record any real failures.
-6. Use Conventional Commits for subsequent commits. Keep existing history intact unless asked to
-   restack/amend. Publish only when authorized, and never merge as part of this implementation pass.
+An agent-started preview someone will open binds to the laptop's Tailscale IPv4 on an unused port
+and separate state, per `AGENTS.md`; never replace an installed service or stop the always-on main
+app. Cross-device app installation needs HTTPS. No preview was started by this continuation.
+Do not push, open a PR, merge, tag or change services without authorization.

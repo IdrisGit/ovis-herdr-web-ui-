@@ -3,12 +3,13 @@
 ## Current status and continuation
 
 The implementation is committed on **`fix/pi-session-labels`**, through application/test commit
-**`3c9f0b51`**. It has not been pushed, opened as a PR, or merged. Read
+**`6aca0609`**. It has not been pushed, opened as a PR, or merged. Read
 [PI_RESUME_SESSION_NAMES_HANDOFF.md](PI_RESUME_SESSION_NAMES_HANDOFF.md) before continuing.
 
-**The user has additional findings from manual testing and will share them with the next agent.**
-Those findings have not been supplied to this session. Their symptoms, reproduction steps and
-causes are unknown; do not infer that they are already covered or resolved by the tests below.
+The manual findings supplied after handoff **`6812d134`** are recorded below. A synthetic
+reproduction and scoped parser optimization are verified. **The user's original openwhispr store
+has not been retested with that optimization:** do not claim its observed failure is resolved
+solely from synthetic passes.
 
 ### Superseded recommendation: caching
 
@@ -21,6 +22,78 @@ conversation/process caches elsewhere in Ovis are not precedent for this flow.
 metadata LRU, prefix hash, append checkpoint, retained retry progress, or shared in-flight answer.
 Do not reinstate those mechanisms to satisfy the initial plan without discussing a concrete need
 with the user. Resource and failure limits remain required.
+
+## Manual follow-up: aggregate scan timeout
+
+### Confirmed test context and observations
+
+The user supplied `/home/idris/Videos/2026-10-29 23-02-08.mp4` and confirmed:
+
+- The tested build was **`6812d134`**, served at `http://127.0.0.1:17318` from this branch.
+- Browser, backend and Pi store were on this laptop, not a remote backend PC. Its OS reports
+  **Omarchy Linux 4.0.6**, x86_64; Pi's recorded banner is **1.4.0**, also confirmed by the user.
+- The findings are those in the video; no separate additional symptoms were reported.
+
+The video shows Ovis's own folder listing readable labels around 10–13 seconds. Switching to
+openwhispr, opening Chat's `/resume`, and selecting Pi shows “Reading sessions…” and then
+“Pi sessions could not be read right now. Try again.” around 20–24 seconds. Switching that pane
+to Terminal and using native `/resume` lists readable entries, with a **202-session** count,
+around 28–31 seconds. The count is observed; transcript sizes and the specific error cause in
+that private store were not measured. No private transcript text was copied into tests or this
+report, and no live user pane was driven during this continuation.
+
+### Synthetic reproduction and correction (`6aca0609`)
+
+A new owned 202-session fixture makes the newest 50 transcripts about 200 MiB in total, using
+fictional system prompts, extension state and tool results. With the original parser it fails
+with `PiMetadataBusy` at the ordinary two-second listing deadline (test duration about 2.17 s,
+including setup). This demonstrates an aggregate workload the previous single-20-MiB regression
+did not cover; it is not a claim that the user's files have these sizes.
+
+The bottleneck is the projection's per-character JavaScript loop and clipped-text update for
+ordinary strings, including large fields not retained in labels. The correction validates
+contiguous ordinary string spans in the regexp engine within the current chunk. Quotes,
+escapes, Unicode decoding and forbidden controls still take their checked paths. It does not
+skip validation of ignored or clipped fields, buffer whole records, change native naming, alter
+other providers, or relax descriptor/permission checks. The two-second budget, 64 KiB chunks,
+reader admission and **fresh uncached scans** are unchanged.
+
+The new regression passes in about **0.55–0.63 s total**, including fixture setup/cleanup and
+**two** complete independent listings. It counts both sets of descriptor bytes and checks the
+50 newest IDs, readable labels and resource cleanup. These are local test durations, not a
+promise of latency on arbitrary stores. New parser tests cover all 32 forbidden raw controls
+inside a large ignored string and clipping/escape behavior across chunk boundaries. A real
+HTTP contract on the isolated herdr runner independently lists a similarly sized 202-session
+store and observes an appended rename on reopening. Existing browser coverage remains unchanged.
+Very large/slow or changing files can still produce the documented retryable error. A manual
+retest of the original store remains necessary to establish whether this correction addresses
+its exact failure.
+
+### Follow-up verification
+
+On **clean `6aca06091b7d0ce6986a0953ee8cd5d807187b85`**:
+
+- **129 targeted unit tests passed.**
+- **Seven isolated history API contract tests passed**, including the large-store regression and
+  all four fixture setup/teardown failure paths.
+- **Session-history browser regression and a fresh build passed.**
+- Runner report: `node_modules/.cache/check/1bd99426-c615-4038-9751-b611557f8ea0/report.json`.
+  Source stayed unchanged; fingerprint
+  `0e9926fe59649a1c116b9f19709f4333c1e00c4234f92e188b9c5e3649c3fde4`.
+  The runner ended processes left by the test command; no cleanup errors or retained state remain.
+
+**Full fast checks remain failed**, not skipped: **8,673 pass, 35 skip, one failure**, still
+unchanged `scripts/install-node-fallback.test.ts:299` (expects `[ node]`, receives `[]` because
+its supposed Node-free PATH contains system Node). Workflow syntax, generated types/themes,
+typecheck and build passed. Report:
+`node_modules/.cache/check/fc24da82-db10-483b-acb7-c831e9678736/report.json` records `6812d134`
+plus the exact five-file diff committed as `6aca0609`, unchanged during execution; fingerprint
+`8c330de5d0882bde3d392f08dda44d042f82e58e7ebc9de52cdbefa76cfdd9d0`.
+
+Verification used Bun 1.4.4, herdr 0.9.5 and Node 26.7.0; the runner warns that CI pins Node 22.
+The later report/handoff documentation update is not part of the clean application-commit run.
+No new independent review was requested or performed. No push, PR, merge, tag, installed service
+change or user-preview restart occurred.
 
 ## Original finding at base `e6041838`
 
@@ -146,9 +219,10 @@ Addressed findings and cleanups:
 
 The last independent review inspected `ce637646`. Its final two P2 findings were addressed in
 `b3da3794` and `3c9f0b51` and verified afterward. **Those follow-up commits have not received another
-independent reviewer pass.** User-reported manual findings are still pending.
+independent reviewer pass.** The subsequent manual follow-up and its verification are above;
+that parser optimization has not received a new independent review either.
 
-## Latest verification
+## Previous handoff verification
 
 All tests use synthetic transcripts and owned temporary/isolated state, never copied private prompts.
 
@@ -184,7 +258,10 @@ new source edits and follow repository verification requirements before any push
 
 ## Next action
 
-Read the handoff, obtain the user's new manual-testing findings, and reproduce those exact symptoms
-before deciding on another change. Do not declare the task finished, publish a PR, or merge merely
-because synthetic regressions pass. No laptop preview was started in this session, and the maintainer's
-always-on main app was not stopped or modified.
+Have the user restart their manually started throwaway backend from this branch (not the installed
+app or always-on main service), then repeat the video's openwhispr Chat `/resume` flow. A backend
+already running `6812d134` does not acquire the parser correction from a browser reload. Record
+whether the real store now lists successfully; if it still errors, obtain sanitized aggregate
+metadata or an explicitly authorized read-only diagnosis before choosing another correction.
+Do not introduce caching or claim complete resolution merely because synthetic regressions pass.
+No preview was started or restarted by this continuation, and the always-on main app was untouched.
