@@ -39,6 +39,8 @@ export interface KeyBarProps {
    * a mode change or a resize; the control says its tap's word (lib/keyboardControl.ts)
    */
   onToggleKeyboard?: () => void;
+  /** the pane the control belongs to: a tap in flight is its own pane's word (lib/keyboardControl.ts) */
+  keyboardOwner?: string;
   /** greys out only the keyboard control: no field it may focus (offline, held, ended, not ready) */
   keyboardDisabled?: boolean;
   /** the keyboard control refuses its tap, keeping the focus and the composition a blur would end,
@@ -221,10 +223,11 @@ export const KEY_SPOKEN_NAMES: ReadonlyArray<{ key: string; label: string }> = [
  * toolbar: a toolbar promises arrow-key navigation between items, which these skip.
  * The keyboard control is no key a hardware keyboard has, so it is a Tab stop.
  */
-export function KeyBar({ onKey, modifiers, onToggleModifier, items, directTyping, onToggleDirect, directDisabled, onPaste, pasteDisabled, note, onNoteDismiss, onToggleKeyboard, keyboardDisabled, keyboardRefused, disabled, holdScope }: KeyBarProps) {
+export function KeyBar({ onKey, modifiers, onToggleModifier, items, directTyping, onToggleDirect, directDisabled, onPaste, pasteDisabled, note, onNoteDismiss, onToggleKeyboard, keyboardOwner = "", keyboardDisabled, keyboardRefused, disabled, holdScope }: KeyBarProps) {
   const t = useT();
   // the control says what its next tap does, not what a mid-animation keyboard measures
-  const keyboard = useSyncExternalStore(keyboardControl.subscribe, keyboardControl.view, keyboardControl.view);
+  const keyboardView = useCallback(() => keyboardControl.view(keyboardOwner), [keyboardOwner]);
+  const keyboard = useSyncExternalStore(keyboardControl.subscribe, keyboardView, keyboardView);
   // only a bar that reaches the bottom of the screen keeps clear of the home indicator: a pane
   // stacked over another one has the other pane under its bar, not the indicator
   const barRef = useRef<HTMLDivElement | null>(null);

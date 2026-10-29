@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { fontSettled } from "../lib/fontFamily.ts";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -527,6 +527,12 @@ export function PaneTerminal({
   // reassertGrid leaves the grid alone, and onData drops the focus report (DECSET
   // 1004's ESC [ I / ESC [ O) xterm fires synchronously from inside that focus() or blur()
   const keyboardToggleFocusRef = useRef(false);
+  // whose word a keyboard-control tap leaves (lib/keyboardControl.ts): this component and the pane
+  // it shows, so a tap in flight here never holds another pane's control
+  const keyboardInstance = useId();
+  const keyboardOwner = `${keyboardInstance}:${paneId === null ? "" : paneStorageId(machineId, paneId)}`;
+  const keyboardOwnerRef = useRef(keyboardOwner);
+  keyboardOwnerRef.current = keyboardOwner;
   useEffect(() => {
     if (!paneId || draftState.owner !== paneStorageId(machineId, paneId)) return;
     const key = `ovis:terminal-draft:${draftState.owner}`;
@@ -658,7 +664,7 @@ export function PaneTerminal({
     socketRef.current?.setMode(role);
   }, [role]);
 
-  const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardToggleFocusRef, lineFocus: lineRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
+  const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardOwnerRef, keyboardToggleFocusRef, lineFocus: lineRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
 
   const { pressKey, toggleModifier, abortTurn } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, paneId, reassertIfStaleRef, setInputError, setModifiers, socketRef, stopKeyRef, tRef, termRef });
 
@@ -719,6 +725,7 @@ export function PaneTerminal({
       refused: composingRef.current || lineComposingRef.current || compositionCommitPendingRef.current,
       hideTarget: hideTarget !== null,
       showTarget: line !== null,
+      owner: keyboardOwnerRef.current,
     });
     if (action !== "show" && action !== "hide") return;
     const show = (): void => {
@@ -1327,7 +1334,7 @@ export function PaneTerminal({
         modifiers={modifiers} onToggleModifier={toggleModifier} items={settings.keyBarItems}
         {...(coarse ? { directTyping, onToggleDirect: toggleDirect, directDisabled: lineComposing, onPaste: pasteIntoLine, pasteDisabled: linePasting,
           note: pasteGuidance ? t("Tap Input line to paste.") : null, onNoteDismiss: dismissPasteGuidance,
-          onToggleKeyboard: toggleKeyboard, keyboardDisabled: !connected || !inputReady || held || ended, keyboardRefused: composing || lineComposing || linePasting } : {})} />}
+          onToggleKeyboard: toggleKeyboard, keyboardOwner, keyboardDisabled: !connected || !inputReady || held || ended, keyboardRefused: composing || lineComposing || linePasting } : {})} />}
     </div>
   );
 }

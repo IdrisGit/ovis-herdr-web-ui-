@@ -9,8 +9,12 @@
  * after Android's back gesture focused a field that was already focused, which raises nothing.
  *
  * So this store keeps the tap's `intent` until the measurement confirms it (and holds still) or the
- * settle window runs out, and keeps `measured` alongside. The one derivation, keyboardControlView,
- * is what the label, the glyph, aria-pressed and the next tap's action all read. A hide confirmed
+ * settle window runs out, and keeps `measured` alongside. Only measurements taken after the tap
+ * confirm it: a value that already agreed before it (the last animation still in flight) is no
+ * answer to it. The intent is the tapping pane's word: another pane's control reads the
+ * measurement, so a tap in flight in one pane never makes another one's control say what it cannot
+ * do. The one derivation, keyboardControlView, is what the label, the glyph, aria-pressed and the
+ * next tap's action all read. A hide confirmed
  * locally (its blur left no typing field focused) is evidence the measurement cannot give, for a
  * browser it is blind in: a zoomed page, a floating keyboard.
  */
@@ -38,8 +42,13 @@ export interface KeyboardControlState {
   measured: boolean;
   /** the tap in flight: what the keyboard is on its way to, the word that holds the control */
   intent: KeyboardDirection | null;
-  /** when `measured` last changed value (not when it was last read) */
-  changedAt: number;
+  /** the pane whose control made the tap in flight: the word is that control's alone */
+  owner: string | null;
+  /**
+   * when a measurement taken after the tap first read the value the intent wants, every one since
+   * reading it too; null until then, and again at each measurement that disagrees
+   */
+  agreedAt: number | null;
 }
 
 export interface KeyboardControlView {
@@ -51,7 +60,7 @@ export interface KeyboardControlView {
 
 export type KeyboardControlEvent =
   | { type: "measure"; up: boolean; at: number }
-  | { type: "press"; action: KeyboardDirection; at: number }
+  | { type: "press"; action: KeyboardDirection; owner: string; at: number }
   /** the tap's settle window ended: the measurement takes over whatever it says */
   | { type: "settle"; at: number }
   /** the tap's blur left no typing field focused anywhere: the keyboard is going */
@@ -60,39 +69,53 @@ export type KeyboardControlEvent =
 /** The measured value that would confirm an intent: a show waits for the keyboard up. */
 const wants = (intent: KeyboardDirection): boolean => intent === "show";
 
+/** No tap in flight: the measurement decides alone. */
+const AT_REST: KeyboardControlState = { measured: false, intent: null, owner: null, agreedAt: null };
+
 /**
  * One step of the machine, free of DOM and clock. A measurement clears an intent it agrees with
- * only after the agreeable value has held still; a tap replaces the intent, last tap wins; a
- * settle window catches what the measurement never confirmed; a hidden state is a dismissal seen
- * at the focus, where a measurement can be blind.
+ * only once the agreeable value, measured after the tap, has held still; a tap replaces the intent
+ * and its owner, last tap wins; a settle window catches what the measurement never confirmed; a
+ * hidden state is a dismissal seen at the focus, where a measurement can be blind.
  */
 export function keyboardControlStep(state: KeyboardControlState, event: KeyboardControlEvent): KeyboardControlState {
   switch (event.type) {
-    case "measure":
-      {
-        // a hide that reads down mid-flight while the keyboard animates back up (the overshoot) must
-        // not flip the control twice; the change counts from the value's arrival, not from the read
-        const changedAt = state.measured === event.up ? state.changedAt : event.at;
-        const confirmed = state.intent !== null && event.up === wants(state.intent) && event.at - changedAt >= KEYBOARD_QUIET_MS;
-        return { measured: event.up, changedAt, intent: confirmed ? null : state.intent };
-      }
+    case "measure": {
+      if (state.intent === null) return { ...state, measured: event.up };
+      // a value that disagrees (the overshoot inside a hide, the last animation landing) restarts the
+      // hold: the next agreeing measurement starts it again
+      if (event.up !== wants(state.intent)) return { ...state, measured: event.up, agreedAt: null };
+      const agreedAt = state.agreedAt ?? event.at;
+      return event.at - agreedAt >= KEYBOARD_QUIET_MS ? { ...AT_REST, measured: event.up } : { ...state, measured: event.up, agreedAt };
+    }
     case "press":
-      // one intent at a time, the last tap's: a double tap cannot queue two moves
-      return { ...state, intent: event.action };
+      // one intent at a time, the last tap's: a double tap cannot queue two moves, and what was
+      // measured before this tap is no answer to it
+      return { ...state, intent: event.action, owner: event.owner, agreedAt: null };
     case "settle":
-      return { ...state, intent: null };
+      return { ...AT_REST, measured: state.measured };
     case "hidden": // the blur says the keyboard is going; the tap's word stands till it settles or confirms
-      return { measured: false, changedAt: state.measured ? event.at : state.changedAt, intent: state.intent };
+      return { ...state, measured: false, agreedAt: state.measured ? null : state.agreedAt };
   }
 }
 
-/** The one derivation: the label, the glyph, aria-pressed and the action all come from here. */
-export function keyboardControlView(state: KeyboardControlState): KeyboardControlView {
-  const direction = state.intent === null
-    ? state.measured ? "hide" : "show"
-    // a show in flight is a keyboard on its way up: the next tap puts it away, and the label says so now
-    : state.intent === "show" ? "hide" : "show";
-  return { direction, pending: state.intent !== null };
+// the four views, one object each: a snapshot that is the same object while it says the same
+const VIEWS = {
+  show: { direction: "show", pending: false },
+  hide: { direction: "hide", pending: false },
+  showPending: { direction: "show", pending: true },
+  hidePending: { direction: "hide", pending: true },
+} as const satisfies Record<string, KeyboardControlView>;
+
+/**
+ * The one derivation: the label, the glyph, aria-pressed and the action all come from here, for
+ * the control of `owner` (by default, the pane whose tap is in flight). Another pane's tap in flight
+ * is not this control's word: it reads the measurement.
+ */
+export function keyboardControlView(state: KeyboardControlState, owner: string | null = state.owner): KeyboardControlView {
+  if (state.intent === null || state.owner !== owner) return state.measured ? VIEWS.hide : VIEWS.show;
+  // a show in flight is a keyboard on its way up: the next tap puts it away, and the label says so now
+  return state.intent === "show" ? VIEWS.hidePending : VIEWS.showPending;
 }
 
 /** What the tap must do, or that it does nothing ("none") or is refused outright. */
@@ -106,6 +129,8 @@ export interface KeyboardTap {
   hideTarget: boolean;
   /** this pane has a field Show may focus (else the control is disabled and never gets here) */
   showTarget: boolean;
+  /** the pane whose control was tapped: the word it leaves is that control's alone */
+  owner: string;
 }
 
 /** The time this store lives by, injected so a test drives it without fake timers. */
@@ -123,8 +148,7 @@ const defaultClock: KeyboardClock = {
 
 export class KeyboardControlStore {
   readonly clock: KeyboardClock;
-  private state: KeyboardControlState = { measured: false, intent: null, changedAt: 0 };
-  private derived = keyboardControlView(this.state);
+  private state: KeyboardControlState = AT_REST;
   private listeners = new Set<() => void>();
   private timer: number | null = null;
 
@@ -137,8 +161,8 @@ export class KeyboardControlStore {
     return () => { this.listeners.delete(listener); };
   };
 
-  /** The same object until what it derives changes: useSyncExternalStore's getSnapshot. */
-  view = (): KeyboardControlView => this.derived;
+  /** `owner`'s control: the same object until what it derives changes, useSyncExternalStore's getSnapshot. */
+  view = (owner: string): KeyboardControlView => keyboardControlView(this.state, owner);
 
   /** lib/viewport.ts, on every sync: the value and the fact that the measurement moved at all. */
   measure = (up: boolean): void => this.apply({ type: "measure", up, at: this.clock.now() });
@@ -149,9 +173,9 @@ export class KeyboardControlStore {
    */
   press = (tap: KeyboardTap): KeyboardPress => {
     if (tap.refused) return "refuse";
-    const action = this.derived.direction;
+    const action = this.view(tap.owner).direction;
     if (action === "hide" ? !tap.hideTarget : !tap.showTarget) return "none";
-    this.apply({ type: "press", action, at: this.clock.now() });
+    this.apply({ type: "press", action, owner: tap.owner, at: this.clock.now() });
     this.arm();
     return action;
   };
@@ -169,11 +193,11 @@ export class KeyboardControlStore {
   };
 
   private apply(event: KeyboardControlEvent): void {
-    const state = keyboardControlStep(this.state, event);
-    const derived = keyboardControlView(state);
+    const before = this.state;
+    const state = keyboardControlStep(before, event);
     this.state = state;
-    if (derived.direction === this.derived.direction && derived.pending === this.derived.pending) return;
-    this.derived = derived;
+    // what any control's view reads: a quiet hold that only moves agreedAt notifies no one
+    if (state.measured === before.measured && state.intent === before.intent && state.owner === before.owner) return;
     for (const listener of this.listeners) listener();
   }
 

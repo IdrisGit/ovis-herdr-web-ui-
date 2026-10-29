@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useRef, type Dispatch, type RefObject, ty
 import type { HerdrSocket, SubmitDelivery, SubmitResult } from "./ws.ts";
 import type { MachineSession } from "./machineSession.ts";
 import { EMPTY_DRAFT } from "./draft.ts";
+import { keyboardControl } from "./keyboardControl.ts";
 import { composerMessage, composerPayload, insertNote, submitNote, submitNotTyped } from "./compose.ts";
 import { afterSend, afterSettled, greetingMemory, rememberGreeting } from "./greeting.ts";
 import { hasModifiers, terminalChord, type StickyModifiers } from "./keys.ts";
@@ -28,6 +29,8 @@ export interface TerminalSendsDeps {
   hostRef: RefObject<HTMLDivElement | null>;
   inputLine: boolean;
   inputRowNow: () => InputRowState | null;
+  /** this pane's keyboard-control owner (lib/keyboardControl.ts): the mode switch reads its keyboard */
+  keyboardOwnerRef: RefObject<string>;
   keyboardToggleFocusRef: RefObject<boolean>;
   /** the input line's handle, where a direct-to-line mode switch hands the grid's keyboard (no component type needed) */
   lineFocus: RefObject<{ focus(): boolean } | null>;
@@ -59,7 +62,7 @@ export interface TerminalSendsDeps {
 }
 
 export function useTerminalSends(deps: TerminalSendsDeps) {
-  const { activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardToggleFocusRef, knownOutcomes, lineComposingRef, lineFocus, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings } = deps;
+  const { activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardOwnerRef, keyboardToggleFocusRef, knownOutcomes, lineComposingRef, lineFocus, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings } = deps;
   const sendDraft = useCallback(() => {
     const socket = socketRef.current;
     const pane = paneRef.current;
@@ -217,10 +220,11 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
   }, [directTyping, updateSettings]);
 
   // the input line keeps a tapped grid from raising the keyboard; typing straight into it gives it
-  // back. Only turning direct typing on raises it: a pane or lens picked with it on does not. A
-  // mode switch is no keyboard gesture: direct to line hands the grid's keyboard to the line, focus
-  // and all, in the same commit that drops data-direct-typing, so the keyboard stays up where the
-  // user had it (a layout effect, before paint); a pane's own remount keeps its blur
+  // back. A mode switch is no keyboard gesture: it leaves the keyboard as the key bar's control says
+  // it is (up, or on its way up from this pane's tap; lib/keyboardControl.ts). Up, the switch hands
+  // it to the new mode's field, focus and all, in the same commit that changes data-direct-typing
+  // (a layout effect, before paint); down, it focuses nothing, though a field kept the focus (the
+  // back gesture's state), where a focus would raise it. A pane's own remount keeps its blur
   const directTypingRef = useRef(directTyping);
   useLayoutEffect(() => {
     const wasDirect = directTypingRef.current;
@@ -228,6 +232,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     directTypingRef.current = directTyping;
     const textarea = hostRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
     if (!textarea) return;
+    const keyboardUp = keyboardControl.view(keyboardOwnerRef.current).direction === "hide";
     if (inputLine) {
       textarea.setAttribute("inputmode", "none");
       if (document.activeElement !== textarea) return;
@@ -235,7 +240,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
       // moves take the focus the bar asked for: nothing they cause is a user's (keyboardToggleFocusRef)
       keyboardToggleFocusRef.current = true;
       try {
-        if (wasDirect && coarse) {
+        if (wasDirect && coarse && keyboardUp) {
           if (!lineFocus.current?.focus()) textarea.blur();
         } else textarea.blur();
       } finally {
@@ -244,7 +249,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     } else {
       textarea.removeAttribute("inputmode");
       // only the selected pane: a focused sibling would take the selection (PaneCanvas onFocusCapture)
-      if (activeRef.current && coarse && !chatView && turnedOn) termRef.current?.focus();
+      if (activeRef.current && coarse && !chatView && turnedOn && keyboardUp) termRef.current?.focus();
     }
   }, [inputLine, coarse, chatView, directTyping, paneId]);
 
