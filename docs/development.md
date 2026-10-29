@@ -246,6 +246,36 @@ bun scripts/link-menu-demo-regression.ts       # a long press on a chat link in 
 
 `FILE_VIEWER_CASE=landscape-notch` selects a viewer case; `FILE_VIEWER_CSS=/path/to/before.css` compares another stylesheet. These checks use Chromium mobile emulation and synthetic safe-area/keyboard geometry; they cannot verify actual iOS Safari keyboard dismissal or notch insets. The existing `bun scripts/file-viewer-regression.ts` separately checks history with an owned herdr pane. The original `scripts/mobile-viewport-regression.ts` exports `checkMobileViewport` for the real-app `bun run test:ui` suite; it also checks the command palette and xterm focus transitions. The demo runners build the real client into a temporary directory, inject the committed fictional-session transport and serve it only on loopback; they do not use a live herdr session or download website media. Run on its own, each builds the client itself (`scripts/demo-build.ts`); the browser lane builds it once and names the directory in `HERDR_DEMO_BUILD`, and each runner copies that instead. They exercise real-app viewport and alert geometry, but not live herdr connectivity.
 
+## Pi session labels
+
+Earlier sessions keeps Pi's native label priority: the latest trimmed `session_info.name` (an
+empty name clears it), else the first usable user string or `text` blocks joined with spaces.
+Pi alone streams metadata on its checked descriptor; other agents retain the 64 KiB head bound.
+Directory discovery retains the existing walk/stat limits. Transcript opens, identity checks,
+reads and stats are asynchronous. A bounded JSON projection validates records without retaining
+large system prompts, extension state or image data. Malformed records and nesting deeper than
+64 levels are skipped through their newline. Incomplete final records are ignored; a valid final
+record needs no newline, matching Pi. BOM-prefixed records are rejected rather than silently
+stripping the BOM before JSON validation.
+
+Like the other agents' Earlier sessions readers, Pi reads metadata fresh on every listing. There
+is no result cache, append-prefix hash, retained parser checkpoint, or shared in-flight answer.
+The server admits at most two readers and 32 waiting tasks. Chunks are 64 KiB; each listing has a
+two-second deadline, including queue time. The deadline bounds scan work instead of a fixed byte
+cutoff. Concurrent listings keep independent deadlines, even when reading the same transcript.
+Only clipped metadata and a bounded record projection are retained during a scan. A final size
+and nanosecond mtime/ctime check refuses a file changed while it was read; coarse timestamps can
+still hide a same-tick in-place rewrite.
+
+A busy reader, elapsed deadline, failed read or changed file returns the standard API error
+envelope, 503 `session_history_busy`, with `Retry-After: 1` and `Cache-Control: no-store`, never
+incomplete rows. Retrying starts over: a very large or slow store may not finish within the
+request's deadline, and reopening does not accumulate progress. There is no automatic background
+scan or persisted format. Server stop refuses queued/in-flight requests; a filesystem call
+already in progress keeps its slot and descriptor until it returns and closes. The synthetic
+`server/pi-session-metadata.test.ts` instruments repeated fresh reads, resource bounds and a
+server answering a ping during a 20 MiB listing.
+
 ## Codex Send now
 
 Codex's `Enter` steers the current turn, but can leave the message pending until the next
