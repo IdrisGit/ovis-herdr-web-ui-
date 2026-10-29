@@ -236,7 +236,7 @@ describe("keyboardControlStore", () => {
   test("a reversal whose value already agreed at the tap waits for the measurement to move, however long it holds", () => {
     // regression (#2333 review, round 2): the old Hide animation can keep reading up past the quiet
     // window after a Show; an unchanged value is no proof the keyboard stopped moving
-    const { clock, goto, fire } = clockRig();
+    const { clock, goto, due, live } = clockRig();
     const store = new KeyboardControlStore(clock);
     store.measure(true);
     goto(1_000);
@@ -256,8 +256,9 @@ describe("keyboardControlStore", () => {
     goto(1_300);
     store.measure(true);
     goto(1_300 + KEYBOARD_QUIET_MS);
-    fire(); // the quiet window and the settle window, whichever comes
+    due(); // only the quiet window is due: the last tap's settle window (1_880) is still ahead
     expect(says(store)).toEqual(["hide", false]);
+    expect(live()).toEqual([]); // confirmed by the quiet window, which cleared the settle window too
   });
 
   test("a reversal tapped before the blur's deferred measurement is judged by the viewport, not by the blur's word", () => {
@@ -282,14 +283,14 @@ describe("keyboardControlStore", () => {
   test("a hold ends at its quiet window without a further measurement, so a later dismissal reads down", () => {
     // regression (#2333 review, round 2): one up after Show and no further event; Android's back
     // gesture then puts the keyboard away. The control (and the mode switch) must read it down
-    const { clock, goto, fire, live } = clockRig();
+    const { clock, goto, due, live } = clockRig();
     const store = new KeyboardControlStore(clock);
     expect(store.press(tap(PANE))).toBe("show");
     goto(20);
     store.measure(true);
     expect(live().sort()).toEqual([KEYBOARD_QUIET_MS, KEYBOARD_SETTLE_MS]);
     goto(20 + KEYBOARD_QUIET_MS);
-    fire();
+    due(); // only the quiet window is due, long before the settle window
     expect(says(store)).toEqual(["hide", false]);
     expect(live()).toEqual([]); // confirmed: no timer is left
     goto(300);
