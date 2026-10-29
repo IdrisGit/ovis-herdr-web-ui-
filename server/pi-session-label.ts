@@ -43,6 +43,7 @@ class Projection {
   private frames: Frame[] = [];
   private token: "string" | "primitive" | null = null;
   private string = new Text(0);
+  private readonly stringEnd = /["\\\u0000-\u001f]/g;
   private key = false;
   private escape = false;
   private unicode: string | null = null;
@@ -111,7 +112,16 @@ class Projection {
             this.accept(frame?.mode === "block" && frame.key === "text" ? this.string : this.string.retained());
           }
         } else if (char.charCodeAt(0) < 32) this.invalid = true;
-        else this.string.add(char);
+        else {
+          // Validate ordinary string spans in the regexp engine, not one JS iteration and
+          // clipped-text update per character of a huge system prompt, tool result or image.
+          // Quotes, escapes and forbidden controls still take the checked path above, even
+          // after the retained text is full. Each span stays inside the current read chunk.
+          this.stringEnd.lastIndex = at;
+          const end = this.stringEnd.exec(text)?.index ?? text.length;
+          this.string.add(text.slice(at, end));
+          at = end - 1;
+        }
         continue;
       }
       if (this.token === "primitive") {

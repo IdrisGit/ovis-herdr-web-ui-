@@ -89,6 +89,26 @@ describe("Pi native label semantics", () => {
     expect(parsed(header() + deeplyNested + '{broken\n' + filler(512 * 1024) + prompt("readable"), PI_CHUNK_BYTES).firstMessage).toBe("readable");
   });
 
+  it("validates controls even in ignored string spans after the label and across read chunks", () => {
+    const prefix = "x".repeat(PI_CHUNK_BYTES + 19);
+    for (let code = 0; code < 32; code++) {
+      const invalid = `{"type":"session_info","name":"bad","ignored":"${prefix}${String.fromCharCode(code)}"}\n`;
+      expect(() => JSON.parse(invalid)).toThrow();
+      expect(parsed(header() + name("good") + invalid, PI_CHUNK_BYTES).title).toBe("good");
+    }
+    const escaped = line({ type: "session_info", name: "valid", ignored: `${prefix}\"\\\n\t\u2028\u2029🐑` });
+    expect(parsed(header() + escaped, PI_CHUNK_BYTES).title).toBe("valid");
+  });
+
+  it("keeps clipping and escape semantics when ordinary string spans cross chunk boundaries", () => {
+    const leading = " ".repeat(PI_CHUNK_BYTES - 15);
+    const body = header() + prompt([{ type: "text", text: `${leading}${"p".repeat(2000)} tail \\"🐑` }])
+      + name(`${leading}${"n".repeat(200)} tail \\"🐑`);
+    for (const chunk of [127, PI_CHUNK_BYTES - 1, PI_CHUNK_BYTES, PI_CHUNK_BYTES + 1]) {
+      expect(parsed(body, chunk)).toMatchObject({ title: `${"n".repeat(200)} …`, firstMessage: `${"p".repeat(2000)} …` });
+    }
+  });
+
   it("rejects BOM-prefixed records as native JSON.parse does, including split BOM bytes", () => {
     const invalid = `\ufeff${name("bad").trimEnd()}`;
     expect(() => JSON.parse(invalid)).toThrow();
@@ -155,6 +175,32 @@ describe("Pi fresh streaming reader", () => {
     appendFileSync(f.file, name("  "));
     expect((await f.list())[0]).toMatchObject({ title: null, firstMessage: "late short prompt" });
   });
+
+  it("lists the newest 50 long sessions from a 202-session store within the normal deadline, freshly each time", async () => {
+    const f = fixture();
+    // Match the video's store count, not its private transcripts. The newest 50 files hold
+    // about 200 MiB together: a listing's shared budget must cover more than one long file.
+    const system = filler(1024 * 1024);
+    const extension = line({ type: "custom", data: { snapshot: "e".repeat(1024 * 1024) } });
+    const output = line({ type: "message", message: { role: "toolResult", content: [{ type: "text", text: `${"synthetic output ".repeat(16)}\n\\\"🐑`.repeat(4000) }] } });
+    let expectedBytes = 0;
+    for (let n = 0; n < 202; n++) {
+      const file = join(f.folder, `${n}.jsonl`);
+      const body = header(`session-${n}`) + (n < 152 ? prompt("older session")
+        : system + prompt(`First prompt ${n}`) + extension + name(`Session ${n}`) + output + system);
+      writeFileSync(file, body);
+      utimesSync(file, 1_790_000_000 + n, 1_790_000_000 + n);
+      if (n >= 152) expectedBytes += Buffer.byteLength(body);
+    }
+    const rows = await f.list();
+    expect(rows.map((row) => row.id)).toEqual(Array.from({ length: 50 }, (_, n) => `session-${201 - n}`));
+    expect(rows.every((row, n) => row.title === `Session ${201 - n}` && row.firstMessage === `First prompt ${201 - n}`)).toBe(true);
+    expect(f.io.bytes).toBe(expectedBytes);
+    expect(await f.list()).toEqual(rows);
+    expect(f.io.bytes).toBe(2 * expectedBytes);
+    expect(f.io.max).toBeLessThanOrEqual(PI_CHUNK_BYTES);
+    expect(f.reader.size()).toEqual({ active: 0, waiting: 0 });
+  }, 30_000);
 
   it("reads completed partial JSONL and multibyte writes on the next fresh listing", async () => {
     const f = fixture();

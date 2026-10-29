@@ -4746,6 +4746,35 @@ describe("GET /api/sessions/history", () => {
     });
   }, 20_000);
 
+  it("lists a 202-session Pi store with 50 long transcripts through the real API without timing out", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-pi-large-history-contract-"));
+    await withPiHistoryFixture(root, async ({ file, url }) => {
+      const cwd = realpathSync(join(root, "project"));
+      const block = line({ type: "custom", data: "synthetic extension state ".repeat(45000) });
+      utimesSync(file, 1_790_000_000, 1_790_000_000);
+      for (let n = 1; n < 202; n++) {
+        const path = join(dirname(file), `${n}.jsonl`);
+        const body = line({ type: "session", version: 3, id: `long-${n}`, cwd })
+          + (n < 152 ? "" : block + line({ type: "message", message: { role: "user", content: `Synthetic prompt ${n}` } })
+            + line({ type: "session_info", name: `Synthetic session ${n}` }) + block.repeat(3));
+        writeFileSync(path, body);
+        utimesSync(path, 1_790_000_000 + n, 1_790_000_000 + n);
+      }
+      const listing = async () => {
+        const response = await fetch(url);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        return ((await response.json()) as SessionHistoryResponse).sessions;
+      };
+      const rows = await listing();
+      expect(rows.map((row) => row.id)).toEqual(Array.from({ length: 50 }, (_, n) => `long-${201 - n}`));
+      expect(rows.every((row, n) => row.title === `Synthetic session ${201 - n}` && row.firstMessage === `Synthetic prompt ${201 - n}`)).toBe(true);
+      // Reopening must scan again and notice a later name, not reuse the completed answer.
+      appendFileSync(join(dirname(file), "201.jsonl"), line({ type: "session_info", name: "Freshly renamed" }));
+      expect((await listing())[0]).toMatchObject({ id: "long-201", title: "Freshly renamed", resume: { argv: ["pi", "--session", "long-201"] } });
+    });
+  }, 20_000);
+
   for (const phase of ["workspace creation", "server creation", "server stop", "workspace close"] as const) {
     it(`cleans up the Pi history fixture when ${phase} fails`, async () => {
       const root = mkdtempSync(join(tmpdir(), "ovis-pi-history-failure-"));

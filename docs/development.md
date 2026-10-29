@@ -253,7 +253,9 @@ empty name clears it), else the first usable user string or `text` blocks joined
 Pi alone streams metadata on its checked descriptor; other agents retain the 64 KiB head bound.
 Directory discovery retains the existing walk/stat limits. Transcript opens, identity checks,
 reads and stats are asynchronous. A bounded JSON projection validates records without retaining
-large system prompts, extension state or image data. Malformed records and nesting deeper than
+large system prompts, extension state or image data. Ordinary string spans are validated in bulk
+within each read chunk; quotes, escapes and control characters are still checked even in discarded
+fields or beyond the retained label. Malformed records and nesting deeper than
 64 levels are skipped through their newline. Incomplete final records are ignored; a valid final
 record needs no newline, matching Pi. BOM-prefixed records are rejected rather than silently
 stripping the BOM before JSON validation.
@@ -274,7 +276,9 @@ request's deadline, and reopening does not accumulate progress. There is no auto
 scan or persisted format. Server stop refuses queued/in-flight requests; a filesystem call
 already in progress keeps its slot and descriptor until it returns and closes. The synthetic
 `server/pi-session-metadata.test.ts` instruments repeated fresh reads, resource bounds and a
-server answering a ping during a 20 MiB listing.
+server answering a ping during a 20 MiB listing. Its 202-session fixture also reads the newest 50
+long transcripts (about 200 MiB together) twice under the ordinary deadline, counting both fresh
+scans; the isolated history API contract covers a similarly sized store.
 
 ## Codex Send now
 
