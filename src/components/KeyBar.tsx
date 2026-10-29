@@ -6,7 +6,7 @@ import "./KeyBar.css";
 import type { KeyBarKey, StickyModifiers } from "../lib/keys.ts";
 import { keyBarItemId, keyBarItemLabel, type KeyBarItem, type KeyBarKeyItem } from "../lib/keyBar.ts";
 import { createKeyRepeat, isRepeatableKeyBarItem, type KeyRepeat } from "../lib/keyRepeat.ts";
-import { keyboardUp, subscribeKeyboardUp } from "../lib/keyboard.ts";
+import { keyboardControl } from "../lib/keyboardControl.ts";
 import { useT } from "../lib/i18n.ts";
 
 export type { KeyBarKey };
@@ -36,7 +36,7 @@ export interface KeyBarProps {
   onNoteDismiss?: () => void;
   /**
    * on a touch screen: shows or hides the soft keyboard for the current input mode, without a key,
-   * a mode change or a resize; the control's pressed state is what lib/viewport.ts measured
+   * a mode change or a resize; the control says its tap's word (lib/keyboardControl.ts)
    */
   onToggleKeyboard?: () => void;
   /** greys out only the keyboard control: no field it may focus (offline, held, ended, not ready) */
@@ -223,9 +223,8 @@ export const KEY_SPOKEN_NAMES: ReadonlyArray<{ key: string; label: string }> = [
  */
 export function KeyBar({ onKey, modifiers, onToggleModifier, items, directTyping, onToggleDirect, directDisabled, onPaste, pasteDisabled, note, onNoteDismiss, onToggleKeyboard, keyboardDisabled, keyboardRefused, disabled, holdScope }: KeyBarProps) {
   const t = useT();
-  // the keyboard control says what the viewport measured (data-keyboard), never that a tap focused
-  // a field: a hardware keyboard, or an occlusion the browser cannot report, leaves it down
-  const keyboardShown = useSyncExternalStore(subscribeKeyboardUp, keyboardUp, () => false);
+  // the control says what its next tap does, not what a mid-animation keyboard measures
+  const keyboard = useSyncExternalStore(keyboardControl.subscribe, keyboardControl.view, keyboardControl.view);
   // only a bar that reaches the bottom of the screen keeps clear of the home indicator: a pane
   // stacked over another one has the other pane under its bar, not the indicator
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -294,10 +293,10 @@ export function KeyBar({ onKey, modifiers, onToggleModifier, items, directTyping
       )}
       {/* after the mode switch and Paste, and unlike the switch: this one moves the keyboard, not the
           typing. Its glyph is the panel at the screen's bottom with the way it goes next, its name says
-          the same, and its pressed state is the measured one */}
+          the same, and its pressed state is the tap's word (lib/keyboardControl.ts) */}
       {onToggleKeyboard && (
-        <Key disabled={keyboardDisabled} refused={keyboardRefused} command dataKey="keyboard" label={t(keyboardShown ? "Hide keyboard" : "Show keyboard")} pressed={keyboardShown} onPress={onToggleKeyboard}>
-          {keyboardShown ? <PanelBottomClose aria-hidden="true" /> : <PanelBottomOpen aria-hidden="true" />}
+        <Key disabled={keyboardDisabled} refused={keyboardRefused} command dataKey="keyboard" label={t(keyboard.direction === "hide" ? "Hide keyboard" : "Show keyboard")} pressed={keyboard.direction === "hide"} onPress={onToggleKeyboard}>
+          {keyboard.direction === "hide" ? <PanelBottomClose aria-hidden="true" /> : <PanelBottomOpen aria-hidden="true" />}
         </Key>
       )}
       {note ? <p className="key-bar-note" role="status" onClick={onNoteDismiss}>{note}</p> : items.map((item) => {

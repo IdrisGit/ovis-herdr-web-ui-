@@ -1,7 +1,8 @@
 /**
  * The key bar's keyboard control (#1046) on the real client over the demo's fixture transport, as a
  * phone: Show focuses the field of the current input mode inside the tap, Hide blurs this pane's
- * field, the pressed state follows what lib/viewport.ts measured, and none of it sends a key,
+ * field, the label and pressed state say what the tap asked for (lib/keyboardControl.ts holds the
+ * tap's word until the measurement confirms it or the settle window runs out), and none of it sends
  * changes the input mode, fits or resizes the shared grid. A composition in either field refuses
  * the tap and keeps its word; a sibling pane's field is never touched; an observer has no control,
  * and a held, ended or offline pane a disabled one. Chromium's synthetic viewport geometry stands
@@ -152,6 +153,25 @@ const nextRender = (page: Page): Promise<void> => page.evaluate(() => new Promis
 const keyOf = (page: Page): Locator => page.locator('.pane-frame:not(.is-hidden) .key-bar [data-key="keyboard"]');
 const lineOf = (page: Page): Locator => page.locator(".pane-frame:not(.is-hidden) .terminal-input-text");
 
+/**
+ * Taps the control and reads its own label, pressed state and the field in the same evaluate, as
+ * the direct-commit check does with key.click(): the tap's word must be read inside its settle
+ * window, which the page's real clock could otherwise outlast in a slow run and flip the assertion
+ * into the settled state.
+ */
+const tapAndState = (page: Page): Promise<{ label: string | null; pressed: string | null; active: string | null; keyboard: boolean }> =>
+  page.evaluate(() => {
+    const key = document.querySelector<HTMLButtonElement>('.pane-frame:not(.is-hidden) .key-bar [data-key="keyboard"]')!;
+    key.click();
+    const active = document.activeElement;
+    return {
+      label: key.getAttribute("aria-label"),
+      pressed: key.getAttribute("aria-pressed"),
+      active: active instanceof HTMLElement && active !== document.body ? active.className : null,
+      keyboard: document.documentElement.hasAttribute("data-keyboard"),
+    };
+  });
+
 const ready = (page: Page): Promise<unknown> =>
   page.waitForFunction(() => document.querySelector<HTMLButtonElement>('.pane-frame:not(.is-hidden) .key-bar [data-key="keyboard"]')?.disabled === false);
 
@@ -263,10 +283,9 @@ async function currentModeKeyboard(browser: Browser): Promise<Record<string, unk
       assert.deepEqual([before.keyboard, before.pressed, before.label, before.active], [false, "false", "Show keyboard", null], `${mode}: at rest, keyboard down (${JSON.stringify(before)})`);
       assert.deepEqual([before.title, before.tabIndex], ["Show keyboard", 0], `${mode}: the icon-only control has its name as a tooltip and is a Tab stop`);
       assert.equal(before.direct, mode === "direct");
-      await key.tap();
-      const shown = await control(page);
+      const shown = await tapAndState(page);
       assert.equal(shown.active, field, `${mode}: Show focuses the mode's own field inside the tap`);
-      assert.deepEqual([shown.pressed, shown.label], ["false", "Show keyboard"], `${mode}: a focus alone is not a keyboard: the state waits for the measurement`);
+      assert.deepEqual([shown.pressed, shown.label], ["true", "Hide keyboard"], `${mode}: the tap's word is the truth at once: the control puts the keyboard away on the next tap`);
       let draft: [string, number | null, number | null] | null = null;
       if (mode === "line") {
         await page.keyboard.type("echo 한글 draft");
@@ -280,10 +299,9 @@ async function currentModeKeyboard(browser: Browser): Promise<Record<string, unk
       assert.equal(up.title, "Hide keyboard", `${mode}: the tooltip follows the measured state`);
       assert.deepEqual(up.grid, before.grid, `${mode}: the grid under the keyboard stays (#1045)`);
       if (mode === "line") assert.deepEqual(await lineState(page), draft, `${mode}: the draft and its caret stay`);
-      await key.tap();
-      const hidden = await control(page);
+      const hidden = await tapAndState(page);
       assert.notEqual(hidden.active, field, `${mode}: Hide blurs the field`);
-      assert.deepEqual([hidden.pressed, hidden.label], ["true", "Hide keyboard"], `${mode}: the state stays the measured one until the keyboard is gone, not a guess`);
+      assert.deepEqual([hidden.pressed, hidden.label], ["false", "Show keyboard"], `${mode}: the blur left no field focused anywhere, so the keyboard is going, and the label says so at once`);
       if (mode === "line") assert.deepEqual(await lineState(page), draft, `${mode}: a blurred line keeps its draft and caret`);
       await lower(page);
       const down = await control(page);
@@ -312,6 +330,57 @@ async function currentModeKeyboard(browser: Browser): Promise<Record<string, unk
     assert.deepEqual([routeAfter.active, routeAfter.direct, routeAfter.settings], ["terminal-input-text", false, routeBefore.settings], "Enter on the control focused from the keyboard shows the line's keyboard, mode and settings unchanged");
     assert.deepEqual(routeAfter.frames.slice(routeBefore.frames.length).filter((type) => FORBIDDEN.has(type)), [], `the keyboard route sends nothing (${routeAfter.frames.slice(routeBefore.frames.length).join(", ") || "no frame"})`);
     console.log(`PASS keyboard route: Tab reaches the control (${route.join(" -> ")}) with a focus-visible ring, and Enter on it focuses the input line, sending nothing`);
+
+    // Android's back gesture puts the keyboard away and leaves the field focused (as the route left
+    // it): the field keeps its focus through the down, and Show re-raises the keyboard by blur and
+    // refocus inside the tap, the new input session a phone raises for
+    const gesture = await control(page);
+    assert.deepEqual([gesture.active, gesture.keyboard], ["terminal-input-text", false], "the gesture model: the field keeps its focus with the keyboard measured down");
+    // the already focused branch must do more than nothing: the line loses and takes the focus again
+    // inside the tap — the blur-and-refocus that is a phone's new input session
+    await page.evaluate(() => {
+      const line = document.querySelector<HTMLTextAreaElement>(".pane-frame:not(.is-hidden) .terminal-input-text")!;
+      const counts = { focusin: 0, focusout: 0 };
+      line.addEventListener("focusin", () => counts.focusin++);
+      line.addEventListener("focusout", () => counts.focusout++);
+      (window as unknown as { lineMoves: typeof counts }).lineMoves = counts;
+    });
+    const tapWord = await tapAndState(page);
+    await raise(page);
+    const reRaised = await control(page);
+    const moves = await page.evaluate(() => (window as unknown as { lineMoves: { focusin: number; focusout: number } }).lineMoves);
+    assert.deepEqual([tapWord.pressed, tapWord.label], ["true", "Hide keyboard"], "the tap's word is the truth at once, before the geometry answers");
+    assert.deepEqual([reRaised.active, reRaised.keyboard], ["terminal-input-text", true], "Show on the already focused field re-raises the keyboard inside the tap");
+    assert.deepEqual(moves, { focusin: 1, focusout: 1 }, `the re-raise is the blur-and-refocus branch, not a no-op tap (${JSON.stringify(moves)})`);
+    await lineOf(page).evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(node.value.length, node.value.length));
+    await page.keyboard.type(" now");
+    const reTyped = await lineState(page);
+    assert.deepEqual(reTyped, ["echo 한글 draft now", "echo 한글 draft now".length, "echo 한글 draft now".length], "typing lands in the re-raised session's line, the caret at its typed end");
+    console.log("PASS back gesture: Show on a focused field with the keyboard down raises it again, and the line takes keyboard types");
+
+    // the mode switch with the keyboard up: the grid takes it in place, then direct to line hands
+    // it back to the line, focus and all — any drop and raise of the keyboard across the switches
+    // (the one-frame loss a real phone would show) is counted
+    await switchMode(page, "direct");
+    const directUp = await control(page);
+    assert.deepEqual([directUp.active, directUp.keyboard], ["xterm-helper-textarea", true], "line to direct: the grid takes the keyboard in place, which stays up");
+    await page.evaluate(() => {
+      const drops = { removed: 0 };
+      const observer = new MutationObserver(() => { if (!document.documentElement.hasAttribute("data-keyboard")) drops.removed++; });
+      observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-keyboard"] });
+      (window as unknown as { keyDrops: typeof drops }).keyDrops = drops;
+    });
+    await switchMode(page, "line");
+    const handed = await control(page);
+    assert.deepEqual([handed.active, handed.keyboard], ["terminal-input-text", true], "direct to line with the keyboard up: the handoff gives the keyboard to the line, focus and all");
+    await flushTimers(page);
+    const drops = await page.evaluate(() => (window as unknown as { keyDrops: { removed: number } }).keyDrops);
+    assert.deepEqual((await control(page)).keyboard, true, "the keyboard is up after the switch and everything it scheduled");
+    assert.deepEqual(drops.removed, 0, `the keyboard was never dropped across the handoff (${drops.removed})`);
+    console.log("PASS mode handoff: direct to line gives the grid's keyboard to the line, focus and all, with no removal of the measured state across the switch");
+    await key.tap();
+    await lower(page);
+    await blur(page);
     assert.deepEqual(errors, []);
     return { scenario: "current-mode-keyboard", cycles, keyboardRoute: { route, before: routeBefore, after: routeAfter } };
   } finally { await context.close(); }
@@ -327,13 +396,16 @@ async function composingOrUnavailableTarget(browser: Browser): Promise<Record<st
     await ready(page);
     let key = keyOf(page);
 
-    // a hardware keyboard, or an occlusion the browser cannot report: the field is focused, nothing is claimed
-    await key.tap();
+    // a hardware keyboard, or an occlusion the browser cannot report: the tap's word is claimed at
+    // once, and leaves again at the settle window the measurement never answered
+    const claimed = await tapAndState(page);
+    assert.deepEqual([claimed.active, claimed.pressed, claimed.label], ["terminal-input-text", "true", "Hide keyboard"], "the tap's word: the control claims the keyboard while the measurement has not answered");
     await page.keyboard.type("git status");
     await lineOf(page).evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(4, 4));
+    await page.waitForFunction(() => document.querySelector('.pane-frame:not(.is-hidden) .key-bar [data-key="keyboard"]')?.getAttribute("aria-label") === "Show keyboard", undefined, { timeout: 3_000 });
     await settled(page);
     const hardware = await control(page);
-    assert.deepEqual([hardware.active, hardware.pressed, hardware.label, hardware.keyboard], ["terminal-input-text", "false", "Show keyboard", false], "no occlusion measured: the control does not claim a keyboard because the focus succeeded");
+    assert.deepEqual([hardware.active, hardware.pressed, hardware.label, hardware.keyboard], ["terminal-input-text", "false", "Show keyboard", false], "no occlusion measured: after the settle window the control answers to what it knows, the field still focused");
     checks["hardwareKeyboard"] = hardware;
     console.log("PASS no-occlusion geometry: a focused field with no keyboard measured stays Show keyboard, not pressed");
 
@@ -553,6 +625,20 @@ async function focusReports(browser: Browser): Promise<Record<string, unknown>> 
     assert.deepEqual(directMode, [], `direct typing: Show (grid focus) and Hide (grid blur) send nothing (${directMode.join(", ")})`);
     assert.notEqual((await control(page)).active, "xterm-helper-textarea");
 
+    // direct typing, the grid already focused with the keyboard measured down (the back-gesture
+    // state): Show's blur-and-refocus inside the tap reports nothing either, though it is a focus
+    // change like a user's
+    await xterm.focus();
+    await page.waitForFunction((from) => (window as unknown as QaWindow).sentFrames.slice(from).some((frame) => frame.type === "input"), from);
+    from = await frameCount();
+    await key.tap();
+    await raise(page);
+    await key.tap();
+    await lower(page);
+    await flushTimers(page);
+    const focusedBranch = await inputs(from);
+    assert.deepEqual(focusedBranch, [], `direct typing, the grid already focused with the keyboard down: the blur-and-refocus reports nothing (${focusedBranch.join(", ")})`);
+
     // and the user's own focus still reports after the control was used
     from = await frameCount();
     await xterm.focus();
@@ -560,8 +646,8 @@ async function focusReports(browser: Browser): Promise<Record<string, unknown>> 
     const userAgain = await inputs(from);
     assert.deepEqual(userAgain, [`input:${JSON.stringify("\u001b[I")}`], "a user's focus still reports after the control was used");
     assert.deepEqual(errors, []);
-    console.log("PASS focus reporting (DECSET 1004): Show and Hide send no ESC [ I / ESC [ O in line or direct mode, and a user's own focus still reports");
-    return { scenario: "focus-reports", userFocus, lineMode, directMode, userAgain };
+    console.log("PASS focus reporting (DECSET 1004): Show and Hide send no ESC [ I / ESC [ O in line or direct mode, an already focused Show's blur-and-refocus sends none, and a user's own focus still reports");
+    return { scenario: "focus-reports", userFocus, lineMode, directMode, focusedBranch, userAgain };
   } finally { await context.close(); }
 }
 

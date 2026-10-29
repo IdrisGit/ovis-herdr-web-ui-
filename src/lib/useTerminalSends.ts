@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useCallback, useLayoutEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { HerdrSocket, SubmitDelivery, SubmitResult } from "./ws.ts";
 import type { MachineSession } from "./machineSession.ts";
 import { EMPTY_DRAFT } from "./draft.ts";
@@ -29,6 +29,8 @@ export interface TerminalSendsDeps {
   inputLine: boolean;
   inputRowNow: () => InputRowState | null;
   keyboardToggleFocusRef: RefObject<boolean>;
+  /** the input line's handle, where a direct-to-line mode switch hands the grid's keyboard (no component type needed) */
+  lineFocus: RefObject<{ focus(): boolean } | null>;
   knownOutcomes: (pane: string | null) => readonly string[] | null;
   lineComposingRef: RefObject<boolean>;
   machineId: string;
@@ -57,7 +59,7 @@ export interface TerminalSendsDeps {
 }
 
 export function useTerminalSends(deps: TerminalSendsDeps) {
-  const { activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardToggleFocusRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings } = deps;
+  const { activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardToggleFocusRef, knownOutcomes, lineComposingRef, lineFocus, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings } = deps;
   const sendDraft = useCallback(() => {
     const socket = socketRef.current;
     const pane = paneRef.current;
@@ -215,16 +217,30 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
   }, [directTyping, updateSettings]);
 
   // the input line keeps a tapped grid from raising the keyboard; typing straight into it gives it
-  // back. Only turning direct typing on raises it: a pane or lens picked with it on does not.
+  // back. Only turning direct typing on raises it: a pane or lens picked with it on does not. A
+  // mode switch is no keyboard gesture: direct to line hands the grid's keyboard to the line, focus
+  // and all, in the same commit that drops data-direct-typing, so the keyboard stays up where the
+  // user had it (a layout effect, before paint); a pane's own remount keeps its blur
   const directTypingRef = useRef(directTyping);
-  useEffect(() => {
-    const turnedOn = directTyping && !directTypingRef.current;
+  useLayoutEffect(() => {
+    const wasDirect = directTypingRef.current;
+    const turnedOn = directTyping && !wasDirect;
     directTypingRef.current = directTyping;
     const textarea = hostRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
     if (!textarea) return;
     if (inputLine) {
       textarea.setAttribute("inputmode", "none");
-      if (document.activeElement === textarea) textarea.blur();
+      if (document.activeElement !== textarea) return;
+      // the handoff is a key-bar move on a touch screen only: a desktop keeps the old blur. The two
+      // moves take the focus the bar asked for: nothing they cause is a user's (keyboardToggleFocusRef)
+      keyboardToggleFocusRef.current = true;
+      try {
+        if (wasDirect && coarse) {
+          if (!lineFocus.current?.focus()) textarea.blur();
+        } else textarea.blur();
+      } finally {
+        keyboardToggleFocusRef.current = false;
+      }
     } else {
       textarea.removeAttribute("inputmode");
       // only the selected pane: a focused sibling would take the selection (PaneCanvas onFocusCapture)
