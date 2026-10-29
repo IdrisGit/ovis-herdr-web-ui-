@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import type { SessionHistoryResponse, SessionSnapshot } from "../shared/protocol.ts";
 import { PiLabelParser } from "./pi-session-label.ts";
-import { PI_CHUNK_BYTES, PI_READERS, PiMetadataBusy, PiSessionReader } from "./pi-session-metadata.ts";
+import { PI_CHUNK_BYTES, PI_READ_DEADLINE_MS, PI_READERS, PiMetadataBusy, PiSessionReader } from "./pi-session-metadata.ts";
 import { listSessions, piSessionFolder } from "./session-history.ts";
 import { handleSessionHistoryRequest } from "./session-history-routes.ts";
 
@@ -309,6 +309,112 @@ describe("Pi fresh streaming reader", () => {
       }
     });
   }
+
+  for (const phase of ["open", "identity stat"] as const) {
+    for (const reason of ["shutdown", "deadline"] as const) {
+      it(`stops the production opener after ${phase} when cancelled by ${reason}`, async () => {
+        const entered = Promise.withResolvers<void>();
+        const release = ioGate();
+        const f = fixture();
+        writeFileSync(f.file, header());
+        const checked = realpathSync(f.file);
+        const actualOpen = fs.open;
+        const actualStat = fs.fstat;
+        let fd = -1;
+        let stats = 0;
+        let now = performance.now();
+        const clock = spyOn(performance, "now").mockImplementation(() => now);
+        const opened = spyOn(fs, "open").mockImplementation(((...args: unknown[]) => {
+          if (args[0] !== checked) return Reflect.apply(actualOpen, fs, args);
+          const callback = args.at(-1) as (error: NodeJS.ErrnoException | null, fd: number) => void;
+          return Reflect.apply(actualOpen, fs, [...args.slice(0, -1), (error: NodeJS.ErrnoException | null, value: number) => {
+            if (error) { callback(error, value); return; }
+            fd = value;
+            if (phase === "open") {
+              entered.resolve();
+              void release.promise.then(() => callback(null, value));
+            } else callback(null, value);
+          }]);
+        }) as typeof fs.open);
+        const stated = spyOn(fs, "fstat").mockImplementation(((...args: unknown[]) => {
+          if (args[0] !== fd) return Reflect.apply(actualStat, fs, args);
+          stats++;
+          if (phase !== "identity stat" || stats !== 1) return Reflect.apply(actualStat, fs, args);
+          const callback = args.at(-1) as (error: NodeJS.ErrnoException | null, stat: fs.BigIntStats) => void;
+          return Reflect.apply(actualStat, fs, [...args.slice(0, -1), (error: NodeJS.ErrnoException | null, stat: fs.BigIntStats) => {
+            entered.resolve();
+            void release.promise.then(() => callback(error, stat));
+          }]);
+        }) as typeof fs.fstat);
+        const outcome = f.list().catch((error: unknown) => error);
+        try {
+          await entered.promise;
+          expect(fstatSync(fd).isFile()).toBe(true);
+          if (reason === "shutdown") {
+            f.reader.close();
+            expect(await outcome).toBeInstanceOf(PiMetadataBusy);
+          } else {
+            // Cross the listing's deadline while the actual production callback is held,
+            // without relying on a timer racing setup on a loaded filesystem.
+            now += PI_READ_DEADLINE_MS + 1;
+          }
+          expect(f.reader.size().active).toBe(1);
+          release.resolve();
+          expect(await outcome).toBeInstanceOf(PiMetadataBusy);
+          await f.reader.idle();
+          expect(stats).toBe(phase === "open" ? 0 : 1);
+          expect(f.io.bytes).toBe(0);
+          expect(() => fstatSync(fd)).toThrow();
+          expect(f.reader.size()).toEqual({ active: 0, waiting: 0 });
+        } finally {
+          f.reader.close();
+          release.resolve();
+          await outcome;
+          await f.reader.idle();
+          opened.mockRestore();
+          stated.mockRestore();
+          clock.mockRestore();
+        }
+      });
+    }
+  }
+
+  it("reports a production open error arriving after the deadline as busy, not an empty listing", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = ioGate();
+    const f = fixture();
+    writeFileSync(f.file, header());
+    const checked = realpathSync(f.file);
+    const actualOpen = fs.open;
+    let now = performance.now();
+    const clock = spyOn(performance, "now").mockImplementation(() => now);
+    const opened = spyOn(fs, "open").mockImplementation(((...args: unknown[]) => {
+      if (args[0] !== checked) return Reflect.apply(actualOpen, fs, args);
+      const callback = args.at(-1) as (error: NodeJS.ErrnoException, fd: number) => void;
+      entered.resolve();
+      void release.promise.then(() => callback(Object.assign(new Error("synthetic open failure"), { code: "EACCES" }), -1));
+    }) as typeof fs.open);
+    const stats = spyOn(fs, "fstat");
+    const outcome = f.list().catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      now += PI_READ_DEADLINE_MS + 1;
+      release.resolve();
+      expect(await outcome).toBeInstanceOf(PiMetadataBusy);
+      await f.reader.idle();
+      expect(stats).not.toHaveBeenCalled();
+      expect(f.io.bytes).toBe(0);
+      expect(f.reader.size()).toEqual({ active: 0, waiting: 0 });
+    } finally {
+      f.reader.close();
+      release.resolve();
+      await outcome;
+      await f.reader.idle();
+      stats.mockRestore();
+      opened.mockRestore();
+      clock.mockRestore();
+    }
+  });
 
   it.skipIf(process.platform === "win32" || Bun.which("mkfifo") === null)("does not block on or read a FIFO swapped in after the regular-file check", async () => {
     const f = fixture();

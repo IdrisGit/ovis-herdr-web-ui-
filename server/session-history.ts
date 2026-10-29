@@ -221,11 +221,13 @@ function openChecked(budget: Budget, file: { real: string; dev: bigint; ino: big
 const defaultFstat = (fd: number, bigint?: boolean): Stats | BigIntStats => bigint ? fstatSync(fd, { bigint: true }) : fstatSync(fd);
 
 /** Pi opens and checks asynchronously too; custom fstat seams stay on the test's calling thread. */
-async function openPiChecked(budget: Budget, file: Found): Promise<number> {
+async function openPiChecked(budget: Budget, file: Found, checkActive: () => void): Promise<number> {
   const fd = await new Promise<number>((done, fail) => open(file.real, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0), (error, fd) => error ? fail(error) : done(fd)));
   try {
+    checkActive();
     const opened = budget.fstatOf !== defaultFstat ? budget.fstatOf(fd, true)
       : await new Promise<BigIntStats>((done, fail) => fstat(fd, { bigint: true }, (error, stat) => error ? fail(error) : done(stat)));
+    checkActive();
     if (!opened.isFile() || bigintOf(opened.dev) !== file.dev || bigintOf(opened.ino) !== file.ino) throw new Error("not the file that was checked");
     return fd;
   } catch (error) { closeSync(fd); throw error; }
@@ -500,7 +502,7 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
   for (const file of files) {
     if (rows.length >= MAX_ROWS) break;
     if (performance.now() >= deadline) throw new PiMetadataBusy();
-    const label = await reader.read(() => openPiChecked(budget, file), deadline);
+    const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), deadline);
     const header = label?.header;
     if (!header || !PI_VERSIONS.has(header.version) || header.id === "" || header.cwd === "" || !cwdMatches(budget, header.cwd, cwds)) continue;
     rows.push(row("pi", header.id, { title: label!.title, firstMessage: label!.firstMessage, startedAt: iso(header.timestamp), updatedAt: new Date(file.mtimeMs).toISOString() }));

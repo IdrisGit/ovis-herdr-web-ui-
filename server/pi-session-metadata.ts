@@ -33,7 +33,8 @@ const descriptorRead = (fd: number, buffer: Buffer, length: number, position: nu
 });
 
 interface Task {
-  open: () => number | Promise<number>;
+  /** Each asynchronous step of an opener must check the owning task before starting more I/O. */
+  open: (checkActive: () => void) => number | Promise<number>;
   deadline: number;
   done: (label: PiLabel | null) => void;
   fail: (error: unknown) => void;
@@ -92,30 +93,36 @@ export class PiSessionReader {
 
   private async scan(task: Task): Promise<PiLabel | null> {
     let fd: number | undefined;
+    const checkActive = () => {
+      if (task.expired || this.stopped || performance.now() >= task.deadline) throw new PiMetadataBusy();
+    };
     try {
-      if (task.expired || this.stopped || performance.now() >= task.deadline) throw new PiMetadataBusy();
-      // The opener validates regular-file identity and no-follow/nonblocking on every request.
-      fd = await task.open();
-      if (task.expired || this.stopped || performance.now() >= task.deadline) throw new PiMetadataBusy();
+      checkActive();
+      // The opener owns its descriptor until validation succeeds; cancellation closes it there.
+      fd = await task.open(checkActive);
+      checkActive();
       const before = await descriptorStat(fd);
       const buffer = Buffer.alloc(PI_CHUNK_BYTES);
       const parser = new PiLabelParser();
       let position = 0;
       const end = Number(before.size);
       while (position < end) {
-        if (task.expired || this.stopped || performance.now() >= task.deadline) throw new PiMetadataBusy();
+        checkActive();
         const length = Math.min(buffer.length, end - position);
         const count = await (this.options.read ?? descriptorRead)(fd, buffer, length, position);
-        if (task.expired || this.stopped || performance.now() >= task.deadline || count <= 0 || count > length) throw new PiMetadataBusy();
+        checkActive();
+        if (count <= 0 || count > length) throw new PiMetadataBusy();
         parser.feed(buffer.subarray(0, count));
         position += count;
       }
-      if (task.expired || this.stopped || performance.now() >= task.deadline) throw new PiMetadataBusy();
+      checkActive();
       const after = await descriptorStat(fd);
-      if (task.expired || this.stopped || performance.now() >= task.deadline
-        || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw new PiMetadataBusy();
+      checkActive();
+      if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw new PiMetadataBusy();
       return parser.finish();
     } catch (error) {
+      // An opener can reject after its deadline too; do not turn that timeout into a missing row.
+      checkActive();
       if (error instanceof PiMetadataBusy) throw error;
       // Unreadable/deleted files list nothing, as the other agents do. A failed read retries.
       if (fd !== undefined) throw new PiMetadataBusy();
