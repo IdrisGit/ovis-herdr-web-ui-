@@ -78,7 +78,7 @@ export interface SessionHistoryOptions {
   codexHome?: string;
   opencodeDb?: string;
   hermesHome?: string;
-  /** Pi's streaming reader; createServer owns and closes one. No metadata is cached. */
+  /** Pi's streaming reader and bounded stat-keyed label cache; createServer owns and closes one. */
   piReader?: PiSessionReader;
   /** Reads at most `max` bytes from the start of a checked non-Pi file (tests count bytes): descriptor only. */
   readHead?: (fd: number, max: number) => Buffer;
@@ -495,13 +495,16 @@ function piFamilyRow(agent: SessionHistoryAgent, scan: Scan, file: Found, cwds: 
 
 async function piSessions(sessions: string, folders: readonly string[], cwds: readonly string[], budget: Budget, reader: PiSessionReader): Promise<Row[]> {
   const scan = scanOf(budget, sessions, undefined);
+  const directories = folders.map((folder) => join(sessions, folder));
+  const files = scan === null ? [] : sessionFiles(scan, directories);
+  const scope = JSON.stringify(directories.map((directory) => resolve(directory)));
+  reader.retain(scope, files.map((file) => file.real));
   if (scan === null) return [];
-  const files = sessionFiles(scan, folders.map((folder) => join(sessions, folder)));
   const deadline = performance.now() + PI_READ_DEADLINE_MS;
   const rows: Row[] = [];
   for (const file of files) {
     if (rows.length >= MAX_ROWS) break;
-    const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), deadline);
+    const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), deadline, { path: file.real, scope });
     const header = label?.header;
     if (!header || !PI_VERSIONS.has(header.version) || header.id === "" || header.cwd === "" || !cwdMatches(budget, header.cwd, cwds)) continue;
     rows.push(row("pi", header.id, { title: label!.title, firstMessage: label!.firstMessage, startedAt: iso(header.timestamp), updatedAt: new Date(file.mtimeMs).toISOString() }));

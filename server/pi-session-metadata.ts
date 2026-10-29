@@ -1,6 +1,6 @@
 /**
- * Pi-only streaming metadata reader. Like the other Earlier sessions readers, every listing reads
- * fresh metadata; no completed answers, parser checkpoints or transcript prefixes are cached.
+ * Pi-only streaming metadata reader. Completed clipped labels are cached by checked path and
+ * descriptor identity/size/timestamps; transcript content and unfinished scans are never cached.
  *
  * Transcript reads/stats are asynchronous on the checked descriptor, never a reopened path.
  * At most two readers run and 32 wait. A listing has one two-second deadline, including queue time; each
@@ -20,6 +20,7 @@ export const PI_CHUNK_BYTES = 64 * 1024;
 export const PI_READ_DEADLINE_MS = 2000;
 export const PI_READERS = 2;
 const WAITING = 32;
+const CACHE_ENTRIES = 256;
 
 export class PiMetadataBusy extends Error {
   constructor() { super("Pi sessions could not be read right now. Try again."); }
@@ -40,6 +41,7 @@ interface Task {
   fail: (error: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
   expired: boolean;
+  cache: { path: string; scope: string } | null;
 }
 
 interface ReaderOptions {
@@ -53,14 +55,15 @@ export class PiSessionReader {
   private active = 0;
   private working = new Set<Promise<void>>();
   private stopped = false;
+  private labels = new Map<string, { key: string; scope: string; label: PiLabel | null }>();
   constructor(private readonly options: ReaderOptions = {}) {}
 
-  /** Independent scans, including for the same file: neither results nor in-flight answers are reused. */
-  read(open: Task["open"], deadline: number): Promise<PiLabel | null> {
+  /** In-flight scans stay independent; only a completed label for an unchanged checked file is reused. */
+  read(open: Task["open"], deadline: number, cache: Task["cache"] = null): Promise<PiLabel | null> {
     if (this.stopped || performance.now() >= deadline || (this.active >= PI_READERS && this.queue.length >= WAITING)) return Promise.reject(new PiMetadataBusy());
     const { promise, resolve, reject } = Promise.withResolvers<PiLabel | null>();
     const task: Task = {
-      open, deadline, done: resolve, fail: reject, expired: false,
+      open, deadline, cache, done: resolve, fail: reject, expired: false,
       timer: setTimeout(() => {
         task.expired = true;
         task.fail(new PiMetadataBusy());
@@ -102,6 +105,15 @@ export class PiSessionReader {
       fd = await task.open(checkActive);
       checkActive();
       const before = await descriptorStat(fd);
+      checkActive();
+      // Nanoseconds strengthen the requested millisecond key on filesystems that expose them.
+      const key = [before.dev, before.ino, before.size, before.mtimeMs, before.ctimeMs, before.mtimeNs, before.ctimeNs].join(":");
+      const cached = task.cache === null ? undefined : this.labels.get(task.cache.path);
+      if (task.cache !== null) this.labels.delete(task.cache.path);
+      if (cached?.key === key && task.cache !== null) {
+        this.labels.set(task.cache.path, { ...cached, scope: task.cache.scope });
+        return cached.label;
+      }
       const buffer = Buffer.alloc(PI_CHUNK_BYTES);
       const parser = new PiLabelParser();
       let position = 0;
@@ -119,10 +131,20 @@ export class PiSessionReader {
       const after = await descriptorStat(fd);
       checkActive();
       if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw new PiMetadataBusy();
-      return parser.finish();
+      const label = parser.finish();
+      if (task.cache !== null) {
+        this.labels.delete(task.cache.path);
+        this.labels.set(task.cache.path, { key, scope: task.cache.scope, label });
+        if (this.labels.size > CACHE_ENTRIES) {
+          const oldest = this.labels.keys().next().value;
+          if (oldest !== undefined) this.labels.delete(oldest);
+        }
+      }
+      return label;
     } catch (error) {
       // An opener can reject after its deadline too; do not turn that timeout into a missing row.
       checkActive();
+      if (task.cache !== null) this.labels.delete(task.cache.path);
       if (error instanceof PiMetadataBusy) throw error;
       // Unreadable/deleted files list nothing, as the other agents do. A failed read retries.
       if (fd !== undefined) throw new PiMetadataBusy();
@@ -133,6 +155,7 @@ export class PiSessionReader {
   /** Refuse queued/in-flight requests now; each active descriptor closes once its filesystem call ends. */
   close(): void {
     this.stopped = true;
+    this.labels.clear();
     for (const task of this.tasks) {
       task.expired = true;
       clearTimeout(task.timer);
@@ -145,11 +168,22 @@ export class PiSessionReader {
   /** Wait until actual filesystem calls/descriptor cleanup finish, even after callers were refused. */
   async idle(): Promise<void> { await Promise.all([...this.working]); }
 
+  /** Drop labels no longer discovered in these listing folders; other stores keep their own entries. */
+  retain(scope: string, paths: readonly string[]): void {
+    const listed = new Set(paths);
+    for (const [path, entry] of this.labels) {
+      if (entry.scope === scope && !listed.has(path)) this.labels.delete(path);
+    }
+  }
+
+  /** Cache count only, never the retained labels or paths (regression instrumentation). */
+  cacheSize(): number { return this.labels.size; }
+
   /** Resource counts only, never names/prompts/paths (regression instrumentation). */
   size(): { active: number; waiting: number } {
     return { active: this.active, waiting: this.queue.length };
   }
 }
 
-/** Direct callers share only reader admission; createServer owns a reader and closes it at stop. */
+/** Direct callers share admission and clipped labels; createServer owns its reader and cache. */
 export const defaultPiSessionReader = new PiSessionReader();

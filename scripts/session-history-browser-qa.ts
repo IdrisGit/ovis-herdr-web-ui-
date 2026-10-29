@@ -62,7 +62,8 @@ utimesSync(piNamed, 1_790_000_002, 1_790_000_002);
 const piUnnamed = join(piFolder, "unnamed.jsonl");
 writeFileSync(piUnnamed, piHeader("pi-unnamed") + piSystem + piLine({ type: "message", message: { role: "user", content: [{ type: "text", text: "Late Pi" }, { type: "text", text: "prompt" }] } }));
 utimesSync(piUnnamed, 1_790_000_001, 1_790_000_001);
-let piBusy = false;
+let piBusy = 0;
+let piLists = 0;
 const piRetry = "Pi sessions could not be read right now. Try again.";
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 const refusal = (code: string, message: string, status: number) => json({ error: { code, message } }, status);
@@ -94,7 +95,9 @@ try {
         const sessions = CLAUDE_ROWS.map((row) => workspaceId === "w3" && paneId !== null && row.resume ? { ...row, resume: { ...row.resume, source: { pane_id: paneId, store_key: CLAUDE_STORE_KEY } } } : row);
         return json({ workspace_id: workspaceId, agent: "claude", cwd: `/fixture/${workspaceId}`, sessions } satisfies SessionHistoryResponse);
       }
-      if (agent === "pi" && piBusy) {
+      if (agent === "pi") piLists++;
+      if (agent === "pi" && piBusy > 0) {
+        piBusy--;
         const response = refusal("session_history_busy", piRetry, 503);
         response.headers.set("retry-after", "1");
         return response;
@@ -167,14 +170,54 @@ try {
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   // Real Pi metadata from synthetic transcripts, not hand-picked titles: late names, a prompt
-  // after a huge system record, freshly read renames/clears and the retryable scan error's existing UI.
-  piBusy = true;
+  // after a huge system record, freshly read renames/clears and automatic busy recovery.
+  const capturePi = async (state: string) => {
+    const previous = await page.evaluate(() => document.documentElement.dataset.theme);
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 800 });
+      for (const theme of ["light", "dark"]) {
+        await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+        await settled(page);
+        await page.screenshot({ path: join(evidence, `pi-${state}-${width}-${theme}.png`) });
+      }
+    }
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.evaluate((value) => {
+      if (value === undefined) delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = value;
+    }, previous);
+  };
+  // StrictMode discards its first mount's read: refuse that probe and the active mount once each,
+  // so only an automatic retry (not the second mount's initial read) can produce the rows.
+  piBusy = 2;
+  const busyOnce = page.waitForResponse((response) => response.url().includes("/sessions/history?") && response.status() === 503);
   await page.evaluate(() => window.qa.openHistory("w1", "pi", "p1"));
-  await dialog.getByRole("alert").filter({ hasText: piRetry }).waitFor();
-  assert.equal(await dialog.locator(".session-row").count(), 0, "an incomplete scan is an explicit retry, never UUID/empty rows");
+  await busyOnce;
+  await dialog.getByRole("status").waitFor();
+  assert.equal(await dialog.getByRole("alert").count(), 0);
+  assert.equal(await dialog.locator(".session-empty").count(), 0);
+  await dialog.locator('[data-session-id="pi-named"]').waitFor();
+  assert.equal(piLists, 3, "the active listing recovers from one busy answer without a click");
+  assert.equal(await dialog.locator(".session-error").count(), 0);
+  await capturePi("busy-recovered");
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
-  piBusy = false;
+  piBusy = 100;
+  const beforeBusy = piLists;
+  await page.evaluate(() => window.qa.openHistory("w1", "pi", "p1"));
+  await dialog.locator(".session-error[role=status]").waitFor({ timeout: 75_000 });
+  assert.equal(piLists - beforeBusy, 7, "one discarded StrictMode probe plus an active read and five retries");
+  assert.equal(await dialog.getByRole("alert").count(), 0);
+  assert.equal(await dialog.locator(".session-empty").count(), 0);
+  assert.equal(await dialog.locator(".session-row").count(), 0);
+  assert.ok((await dialog.locator(".session-error").textContent())?.trim());
+  await capturePi("busy-retry");
+  piBusy = 0;
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
+  await dialog.locator('[data-session-id="pi-named"]').waitFor();
+  assert.equal(await dialog.locator(".session-error").count(), 0);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
   const openPi = async () => {
     await page.evaluate(() => window.qa.openHistory("w1", "pi", "p1"));
     await dialog.locator(".session-row").first().waitFor();
@@ -197,7 +240,7 @@ try {
   assert.equal(await dialog.locator(".session-id").count(), 0);
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
-  console.log("PASS Pi late names/first-prompt fallback, fresh rename/clear, and retryable scan error");
+  console.log("PASS Pi busy-once automatic recovery, bounded persistent busy with Retry, late labels and fresh rename/clear");
   // the keyboard alone: the row's context-menu key, the item, the first row's button focused, arrows
   // along the rows, Tab inside, Escape closing with the focus back on the row
   await row("w1").focus();

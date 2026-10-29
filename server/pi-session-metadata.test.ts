@@ -40,10 +40,11 @@ function fixture(options: ConstructorParameters<typeof PiSessionReader>[0] = {})
   const folder = join(store, piSessionFolder(process.cwd()));
   mkdirSync(folder, { recursive: true });
   const file = join(folder, "fixture.jsonl");
-  const io = { bytes: 0, max: 0 };
+  const io = { bytes: 0, max: 0, calls: 0 };
   const reader = new PiSessionReader({
     read: options.read ?? ((fd, buffer, length, position) => new Promise((done, fail) => {
       io.max = Math.max(io.max, length);
+      io.calls++;
       read(fd, buffer, 0, length, position, (error, bytes) => { io.bytes += bytes; if (error) fail(error); else done(bytes); });
     })),
   });
@@ -208,8 +209,8 @@ describe("Pi native label semantics", () => {
   });
 });
 
-describe("Pi fresh streaming reader", () => {
-  it("finds late prompts/middle names and rereads unchanged and appended files without caching", async () => {
+describe("Pi stat-keyed streaming reader", () => {
+  it("reuses unchanged labels without reads and refreshes appended names and clears", async () => {
     const f = fixture();
     const body = header() + filler(128 * 1024) + line({ type: "custom", data: "s".repeat(128 * 1024) }) + prompt("late short prompt")
       + name("  name in the middle  ") + filler(3 * 1024 * 1024);
@@ -219,17 +220,19 @@ describe("Pi fresh streaming reader", () => {
     const bytes = Buffer.byteLength(body);
     expect(f.io.bytes).toBe(bytes);
     expect(f.io.max).toBeLessThanOrEqual(PI_CHUNK_BYTES);
+    const firstReads = f.io.calls;
     expect(await f.list()).toEqual(rows);
-    expect(f.io.bytes).toBe(2 * bytes);
+    expect(f.io.bytes).toBe(bytes);
+    expect(f.io.calls).toBe(firstReads);
     const suffix = name("renamed");
     appendFileSync(f.file, suffix);
     expect((await f.list())[0]?.title).toBe("renamed");
-    expect(f.io.bytes).toBe(3 * bytes + Buffer.byteLength(suffix));
+    expect(f.io.bytes).toBe(2 * bytes + Buffer.byteLength(suffix));
     appendFileSync(f.file, name("  "));
     expect((await f.list())[0]).toMatchObject({ title: null, firstMessage: "late short prompt" });
   });
 
-  it("lists the newest 50 long sessions from a 202-session store within the normal deadline, freshly each time", async () => {
+  it("lists the newest 50 long sessions within the deadline and reads zero bytes on repeat", async () => {
     const f = fixture();
     // Match the video's store count, not its private transcripts. The newest 50 files hold
     // about 200 MiB together: a listing's shared budget must cover more than one long file.
@@ -250,7 +253,7 @@ describe("Pi fresh streaming reader", () => {
     expect(rows.every((row, n) => row.title === `Session ${201 - n}` && row.firstMessage === `First prompt ${201 - n}`)).toBe(true);
     expect(f.io.bytes).toBe(expectedBytes);
     expect(await f.list()).toEqual(rows);
-    expect(f.io.bytes).toBe(2 * expectedBytes);
+    expect(f.io.bytes).toBe(expectedBytes);
     expect(f.io.max).toBeLessThanOrEqual(PI_CHUNK_BYTES);
     expect(f.reader.size()).toEqual({ active: 0, waiting: 0 });
   }, 30_000);
@@ -297,8 +300,10 @@ describe("Pi fresh streaming reader", () => {
     renameSync(f.file, `${f.file}.old`);
     writeFileSync(f.file, header("replacement") + prompt("replacement prompt"));
     expect((await f.list())[0]).toMatchObject({ id: "replacement", firstMessage: "replacement prompt" });
+    expect(f.reader.cacheSize()).toBe(1);
     rmSync(f.file);
     expect(await f.list()).toEqual([]);
+    expect(f.reader.cacheSize()).toBe(0);
   });
 
   it("keeps same-ID files in different stores and paths independent", async () => {
@@ -310,6 +315,36 @@ describe("Pi fresh streaming reader", () => {
     expect((await b.list())[0]?.title).toBe("store B");
     writeFileSync(join(a.folder, "other.jsonl"), header() + name("other path"));
     expect((await a.list()).map((row) => row.title).sort()).toEqual(["other path", "store A"]);
+  });
+
+  it("drops deleted entries without evicting unchanged labels from another listed store", async () => {
+    const a = fixture(); const b = fixture();
+    b.stores.piReader = a.reader;
+    writeFileSync(a.file, header("a") + prompt("first A"));
+    writeFileSync(b.file, header("b") + prompt("first B"));
+    await a.list();
+    const rows = await b.list();
+    expect(a.reader.cacheSize()).toBe(2);
+    const reads = a.io.calls;
+    rmSync(a.file);
+    expect(await a.list()).toEqual([]);
+    expect(a.reader.cacheSize()).toBe(1);
+    expect(await b.list()).toEqual(rows);
+    expect(a.io.calls).toBe(reads);
+  });
+
+  it("bounds retained labels across stores and clears them when stopped", async () => {
+    const shared = fixture();
+    for (let store = 0; store < 6; store++) {
+      const f = store === 0 ? shared : fixture();
+      f.stores.piReader = shared.reader;
+      for (let n = 0; n < 50; n++) writeFileSync(join(f.folder, `${n}.jsonl`), header(`s-${store}-${n}`) + prompt("small"));
+      expect(await f.list()).toHaveLength(50);
+      expect(shared.reader.cacheSize()).toBeLessThanOrEqual(256);
+    }
+    expect(shared.reader.cacheSize()).toBe(256);
+    shared.reader.close();
+    expect(shared.reader.cacheSize()).toBe(0);
   });
 
   it("bounds open readers and waiting tasks, and closes descriptors on stop", async () => {
@@ -679,7 +714,7 @@ describe("Pi fresh streaming reader", () => {
     expect(opened).toBe(false);
   });
 
-  it("keeps a server responsive during a fresh 20 MiB listing and reads the file again on the next request", async () => {
+  it("keeps a server responsive during a fresh 20 MiB listing and reuses its label next time", async () => {
     const scanning = Promise.withResolvers<void>();
     const release = ioGate();
     let bytes = 0;
@@ -717,7 +752,7 @@ describe("Pi fresh streaming reader", () => {
       const second = await fetch(url);
       expect(second.status).toBe(200);
       expect(((await second.json()) as SessionHistoryResponse).sessions).toEqual(rows);
-      expect(bytes).toBe(2 * size);
+      expect(bytes).toBe(size);
     } finally {
       f.reader.close();
       release.resolve();

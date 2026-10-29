@@ -263,8 +263,16 @@ stripping the BOM before JSON validation. Native falsy JSON preambles are ignore
 record must be a session header. Header cwd/ID strings exceeding 16 KiB are refused rather than
 matched or returned as truncated identities; display-label clipping remains separate.
 
-Like the other agents' Earlier sessions readers, Pi reads metadata fresh on every listing. There
-is no result cache, append-prefix hash, retained parser checkpoint, or shared in-flight answer.
+Pi checks each transcript's path and descriptor identity on every listing. Its server-owned,
+in-memory LRU cache retains at most 256 completed clipped labels and header metadata, never
+transcript content, append prefixes, parser checkpoints or shared in-flight answers. The key is
+the absolute path plus device, inode, size, mtime and ctime where available (nanosecond timestamps
+strengthen the millisecond fields where the filesystem exposes them). An unchanged key performs
+no transcript reads; a changed key scans the file again, so appended names, cleared names and
+new first prompts appear on the next open. Each listing drops entries for transcripts no longer
+discovered in its folders; the count bound also evicts older stores. Stopping the server clears
+the cache. Coarse timestamps can still hide a same-tick, same-size in-place rewrite whose
+identity and timestamps all stay unchanged.
 The server admits at most two readers and 32 waiting tasks. Chunks are 64 KiB; each listing has a
 two-second deadline, including queue time. The deadline bounds scan work instead of a fixed byte
 cutoff. Concurrent listings keep independent deadlines, even when reading the same transcript.
@@ -274,15 +282,18 @@ still hide a same-tick in-place rewrite.
 
 A busy reader, elapsed deadline, failed read or changed file returns the standard API error
 envelope, 503 `session_history_busy`, with `Retry-After: 1` and `Cache-Control: no-store`, never
-incomplete rows. Retrying starts over: a very large or slow store may not finish within the
-request's deadline, and reopening does not accumulate progress. There is no automatic background
+incomplete rows. The browser keeps its loading state through five bounded automatic retries,
+honouring Retry-After with the same backoff as a busy skill list, then offers a Retry button.
+Retrying an uncached file starts over: a very large or slow file may not finish within the
+request's deadline, and its unfinished scan does not accumulate progress. There is no automatic background
 scan or persisted format. Server stop refuses queued/in-flight requests; a filesystem call
 already in progress keeps its slot and descriptor until it returns and closes. The synthetic
-`server/pi-session-metadata.test.ts` instruments repeated fresh reads, resource bounds and a
+`server/pi-session-metadata.test.ts` instruments zero-read cache hits, appended label refresh,
+deleted-entry eviction, resource bounds and a
 server answering a ping while a 20 MiB listing is held at a controlled read gate. Deterministic
 clock/timer cases cover aggregate listing expiry, independent deadlines, queued expiry without
 opening and FIFO admission. The ungated 202-session fixture reads the newest 50 long transcripts
-(about 200 MiB together) twice under the ordinary deadline, counting both fresh scans; the isolated
+(about 200 MiB together) under the ordinary deadline, then repeats with no transcript reads; the isolated
 history API contract covers a similarly sized store and error-only refusal after an earlier row.
 
 ## Codex Send now
