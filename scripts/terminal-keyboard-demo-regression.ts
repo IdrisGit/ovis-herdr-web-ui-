@@ -542,7 +542,7 @@ async function composingOrUnavailableTarget(browser: Browser): Promise<Record<st
     await page.locator(`.pane-frame:not(.is-hidden)[data-layout-pane="${hiddenFrame}"]`).waitFor();
     await ready(page);
     const other = await control(page);
-    assert.deepEqual([other.label, other.pressed, other.keyboard], ["Show keyboard", "false", false], `the pane now shown reads the keyboard, not the other pane's Show in flight (${JSON.stringify([other.label, other.pressed])})`);
+    assert.deepEqual([other.label, other.pressed, other.keyboard], ["Show keyboard", "false", false], `the pane now shown reads the keyboard: the other pane's Show, in flight when it was left, is not its word (${JSON.stringify([other.label, other.pressed])})`);
     await keyOf(page).tap();
     const switched = await focusedPane();
     assert.deepEqual(switched, { active: "terminal-input-text", frame: hiddenFrame, draft: shellDraft(hiddenFrame), hiddenFocused: false }, `after the switch, the control focuses the pane now shown, whose draft and caret are its own (${JSON.stringify(switched)})`);

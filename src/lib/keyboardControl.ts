@@ -40,6 +40,8 @@ export const KEYBOARD_QUIET_MS = 120;
 export interface KeyboardControlState {
   /** the last measurement, or a local hidden confirmation, of the keyboard */
   measured: boolean;
+  /** the last value the viewport itself measured: a local hidden confirmation does not move it */
+  observed: boolean;
   /** the tap in flight: what the keyboard is on its way to, the word that holds the control */
   intent: KeyboardDirection | null;
   /** the pane whose control made the tap in flight: the word is that control's alone */
@@ -77,7 +79,7 @@ export type KeyboardControlEvent =
 const wants = (intent: KeyboardDirection): boolean => intent === "show";
 
 /** No tap in flight: the measurement decides alone. */
-const AT_REST: KeyboardControlState = { measured: false, intent: null, owner: null, stale: false, agreedAt: null };
+const AT_REST: KeyboardControlState = { measured: false, observed: false, intent: null, owner: null, stale: false, agreedAt: null };
 
 /**
  * One step of the machine, free of DOM and clock. A measurement clears an intent it agrees with
@@ -89,24 +91,26 @@ const AT_REST: KeyboardControlState = { measured: false, intent: null, owner: nu
 export function keyboardControlStep(state: KeyboardControlState, event: KeyboardControlEvent): KeyboardControlState {
   switch (event.type) {
     case "measure": {
-      if (state.intent === null) return { ...state, measured: event.up };
+      const measured = { measured: event.up, observed: event.up };
+      if (state.intent === null) return { ...state, ...measured };
       // a value that disagrees (the overshoot inside a hide, the last animation landing) restarts the
       // hold, and is the move a stale value waited for
-      if (event.up !== wants(state.intent)) return { ...state, measured: event.up, stale: false, agreedAt: null };
+      if (event.up !== wants(state.intent)) return { ...state, ...measured, stale: false, agreedAt: null };
       // the value from before the tap, still unmoved: the old animation may yet carry it away
-      if (state.stale) return { ...state, measured: event.up };
+      if (state.stale) return { ...state, ...measured };
       const agreedAt = state.agreedAt ?? event.at;
-      return event.at - agreedAt >= KEYBOARD_QUIET_MS ? { ...AT_REST, measured: event.up } : { ...state, measured: event.up, agreedAt };
+      return event.at - agreedAt >= KEYBOARD_QUIET_MS ? { ...AT_REST, ...measured } : { ...state, ...measured, agreedAt };
     }
     case "quiet":
       return state.intent !== null && state.agreedAt !== null && event.at - state.agreedAt >= KEYBOARD_QUIET_MS
-        ? { ...AT_REST, measured: state.measured } : state;
+        ? { ...AT_REST, measured: state.measured, observed: state.observed } : state;
     case "press":
-      // one intent at a time, the last tap's: a double tap cannot queue two moves, and what was
-      // measured before this tap is no answer to it
-      return { ...state, intent: event.action, owner: event.owner, stale: state.measured === wants(event.action), agreedAt: null };
+      // one intent at a time, the last tap's: a double tap cannot queue two moves, and what the
+      // viewport measured before this tap is no answer to it (a blur's local word is not a
+      // measurement: the viewport may still read the old animation)
+      return { ...state, intent: event.action, owner: event.owner, stale: state.observed === wants(event.action), agreedAt: null };
     case "settle":
-      return { ...AT_REST, measured: state.measured };
+      return { ...AT_REST, measured: state.measured, observed: state.observed };
     case "hidden": // the blur says the keyboard is going; the tap's word stands till it settles or confirms
       return { ...state, measured: false, agreedAt: state.measured ? null : state.agreedAt };
   }

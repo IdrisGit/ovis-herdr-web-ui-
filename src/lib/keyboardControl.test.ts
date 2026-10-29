@@ -2,13 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { KEYBOARD_QUIET_MS, KEYBOARD_SETTLE_MS, type KeyboardClock, type KeyboardControlState, KeyboardControlStore, keyboardControlStep, keyboardControlView } from "./keyboardControl.ts";
 
 /** A clock the tests drive by hand: `goto` moves time, `fire` runs the armed settle timer, `live` names them. */
-const clockRig = (): { clock: KeyboardClock; goto: (at: number) => void; fire: () => void; live: () => number[] } => {
+const clockRig = (): { clock: KeyboardClock; goto: (at: number) => void; fire: () => void; due: () => void; live: () => number[] } => {
   let at = 0;
   let next = 0;
-  const timers = new Map<number, { run: () => void; ms: number }>();
+  const timers = new Map<number, { run: () => void; ms: number; deadline: number }>();
   const fake: KeyboardClock = {
     now: () => at,
-    set: (run, ms) => { const id = ++next; timers.set(id, { run, ms }); return id; },
+    set: (run, ms) => { const id = ++next; timers.set(id, { run, ms, deadline: at + ms }); return id; },
     clear: (id) => { timers.delete(id); },
   };
   return {
@@ -16,6 +16,8 @@ const clockRig = (): { clock: KeyboardClock; goto: (at: number) => void; fire: (
     goto: (value) => { at = value; },
     // runs every timer armed so far (each once); one a run arms is left for the next fire
     fire: () => { for (const [id, timer] of [...timers]) { if (!timers.delete(id)) continue; timer.run(); } },
+    // runs only the timers whose deadline has come, as a real clock would at this time
+    due: () => { for (const [id, timer] of [...timers]) { if (timer.deadline > at || !timers.delete(id)) continue; timer.run(); } },
     live: () => [...timers.values()].map((timer) => timer.ms),
   };
 };
@@ -24,7 +26,7 @@ const PANE = "pane-a";
 const SIBLING = "pane-b";
 /** A tap of `owner`'s control, with a field to blur and one to focus. */
 const tap = (owner: string) => ({ refused: false, hideTarget: true, showTarget: true, owner });
-const atRest = (measured: boolean): KeyboardControlState => ({ measured, intent: null, owner: null, stale: false, agreedAt: null });
+const atRest = (measured: boolean): KeyboardControlState => ({ measured, observed: measured, intent: null, owner: null, stale: false, agreedAt: null });
 const pressing = (state: KeyboardControlState, action: "show" | "hide", at = 0): KeyboardControlState =>
   keyboardControlStep(state, { type: "press", action, owner: PANE, at });
 /** The store's derived pair as `owner`'s control reads it, deep-comparable. */
@@ -57,7 +59,7 @@ describe("keyboardControlStep", () => {
     expect(state.intent).toBe("hide");
     // the blur's hidden state keeps the word too: only the quiet hold or the settle clears it
     state = keyboardControlStep({ ...atRest(true), intent: "hide" }, { type: "hidden", at: 1_200 });
-    expect(state).toEqual({ measured: false, intent: "hide", owner: null, stale: false, agreedAt: null });
+    expect(state).toEqual({ measured: false, observed: true, intent: "hide", owner: null, stale: false, agreedAt: null });
     expect(keyboardControlView(state)).toEqual({ direction: "show", pending: true });
   });
 });
@@ -256,6 +258,25 @@ describe("keyboardControlStore", () => {
     goto(1_300 + KEYBOARD_QUIET_MS);
     fire(); // the quiet window and the settle window, whichever comes
     expect(says(store)).toEqual(["hide", false]);
+  });
+
+  test("a reversal tapped before the blur's deferred measurement is judged by the viewport, not by the blur's word", () => {
+    // regression (#2333 review, round 3): Hide's blur says down locally; Show lands before the
+    // viewport's deferred focusout sync, then the old animation still reads up past the quiet window
+    const { clock, goto, due } = clockRig();
+    const store = new KeyboardControlStore(clock);
+    store.measure(true);
+    goto(1_000);
+    expect(store.press(tap(PANE))).toBe("hide");
+    store.settled("hide", true);
+    expect(store.press(tap(PANE))).toBe("show");
+    store.measure(true); // Show's focusin, and the deferred sync: the old Hide animation
+    goto(1_000 + KEYBOARD_QUIET_MS);
+    due(); // the timers due by now: no quiet window may confirm a value from before the tap
+    goto(1_180);
+    store.measure(false); // the old animation lands
+    expect(says(store)).toEqual(["hide", true]);
+    expect(store.press(tap(PANE))).toBe("hide"); // the control does what the last tap's word says
   });
 
   test("a hold ends at its quiet window without a further measurement, so a later dismissal reads down", () => {
