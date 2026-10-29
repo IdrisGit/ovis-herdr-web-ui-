@@ -4,7 +4,7 @@
 
 - Checkout: `/home/idris/Dev/oss/ovis-herdr-web-ui-`, branch **`fix/pi-session-labels`**.
 - Original continuation HEAD: **`6812d134`**. Latest application/test commit:
-  **`6aca06091b7d0ce6986a0953ee8cd5d807187b85`** — `fix(session-history): scan Pi label string spans in bulk`.
+  **`d5e621c4279dce95bd2ab0d700eea358b4a87f70`** — `fix(session-history): address Pi metadata review findings`.
   The following documentation commit updates this handoff and the report; consult `git log`.
 - The existing implementation and review fixes were preserved, not restarted.
 - The branch remains local, with no configured upstream. No push, PR, merge, tag, installed-service
@@ -52,6 +52,30 @@ and **two fresh listings**. It counts both complete scans, checks newest-first I
 sees an appended rename on reopening. New boundary/control tests preserve validation and clipping.
 These are local test durations, not arbitrary-store latency guarantees.
 
+## Parallel review: all findings and optional items resolved
+
+The user requested six parallel reviewers on the session model at xhigh, then directed fixing
+**all findings, including optional cleanups**. The six lanes reviewed `e6041838..d666a82a` with
+`openai/gpt-6.1-sol-fast:xhigh`. The parent independently reproduced both production edge cases
+with owned synthetic files. `d5e621c4` resolves every accepted item:
+
+- Reject overflowing header cwd/ID strings instead of using truncated identities, including the
+  Windows padded-separator membership case. Exact-limit values remain valid; label clipping is separate.
+- Match native falsy-preamble skipping while preserving truthy non-header rejection. Root strings
+  retain one character for truthiness, and primitive records finalize independently of trailing whitespace.
+- Assert malformed-UTF-8 rejection without a later rename masking bad acceptance; retain recovery coverage.
+- Replace scheduling assumptions with controlled clocks/read gates and complete pending-fetch cleanup.
+- Cover shared multi-file deadlines, queued expiry without opening, FIFO, and error-only HTTP refusal
+  after a real first scan. Keep the aggregate workload ungated.
+- Remove the unsupported comparative-performance changelog bullet.
+- Apply all optional cleanups: zero-retention accumulation is a no-op, the immutable escape lookup
+  is hoisted, and the duplicate immediate outer deadline check/unused error import are removed.
+
+The four originating reviewers then checked `d666a82a..d5e621c4` at inherited xhigh thinking.
+**All confirmed their items resolved with no new findings.** These were read-only source/evidence
+reviews, not reviewer-run tests or authority to publish/merge. The report records the complete
+resolution table and review artifact references. No finding establishes the private video's cause.
+
 ## Required decisions and invariants
 
 - **Keep the explicitly approved uncached design.** No LRU, prefix hash, append checkpoint, retained
@@ -71,25 +95,29 @@ These are local test durations, not arbitrary-store latency guarantees.
 
 ## Latest verification and limitations
 
-Clean **`6aca0609`**, checked serially under the isolated runner with a fresh build:
+Clean **`d5e621c4`**, checked serially under the isolated runner with a fresh build:
 
-- **129 targeted unit tests passed.**
-- **Seven history API contract tests passed**, including the large store and all four fixture failure paths.
+- **136 targeted unit tests passed.**
+- **Seven history API contract tests passed**, including the large store, all four fixture failure
+  paths and an error-only 503 after a real first row.
 - **Session-history browser regression passed**, with existing rename/clear/error/resume/permission coverage.
-- Runner report: `node_modules/.cache/check/1bd99426-c615-4038-9751-b611557f8ea0/report.json`.
-  Source unchanged; fingerprint `0e9926fe59649a1c116b9f19709f4333c1e00c4234f92e188b9c5e3649c3fde4`.
+- Runner report: `node_modules/.cache/check/79036277-c45f-4775-8020-c9f162dbc8f7/report.json`.
   The runner ended test-command processes; no cleanup errors or retained state remain.
 
-**Fast checks are still not green.** Rerun result: **8,673 unit passes, 35 skips, one unchanged
+**Fast checks are still not green.** Clean-head rerun: **8,680 unit passes, 35 skips, one unchanged
 failure in `scripts/install-node-fallback.test.ts:299`**. Its supposed Node-free `/usr/bin:/bin`
 fixture finds system Node, so it expects `[ node]` but gets `[]`. It was not fixed, skipped or hidden.
 Workflow syntax, generated types/themes, typecheck and build passed.
 
-Fast report: `node_modules/.cache/check/fc24da82-db10-483b-acb7-c831e9678736/report.json`, recording
-`6812d134` plus the exact five-file diff committed as `6aca0609`, unchanged during execution;
-fingerprint `8c330de5d0882bde3d392f08dda44d042f82e58e7ebc9de52cdbefa76cfdd9d0`.
-The report/handoff update after `6aca0609` is documentation only, outside the clean-commit run.
+Fast report: `node_modules/.cache/check/a5c5c752-6f06-49ac-9c9b-e6d625345e50/report.json`.
+Both reports record clean `d5e621c4`, unchanged source and fingerprint
+`32c5d93e110f84fed7db6b935356d3b74300093cae7104aed0dfef10ffc9a254`.
+The report/handoff update after `d5e621c4` is documentation only, outside the clean-commit runs.
 Reports are machine-local artifacts, not committed or guaranteed to transfer.
+
+Production edge-case regressions failed before correction. Temporary negative controls made the
+new UTF-8 assertion fail under nonfatal decoding, and aggregate-expiry coverage fail under renewed
+per-file deadlines. Both fault edits were restored before final verification; none is committed.
 
 Host: Bun 1.4.4, herdr 0.9.5, Node 26.7.0 (CI pins Node 22; runner warns). No native macOS/Windows
 or complete integration/browser lane was run for this scoped continuation. `git diff --check` passed.
@@ -108,11 +136,12 @@ or complete integration/browser lane was run for this scoped continuation. `git 
 - `scripts/session-history-browser-qa.ts`: unchanged real-component coverage with synthetic Pi metadata.
 - `docs/development.md`, `changelog.d/pi-session-labels.md`: policy and user-visible notes.
 
-Commit sequence before the new correction: `2cfc5500`, `402dc5ce`, `ce637646`, `b3da3794`,
-`3c9f0b51`, `6812d134`. The report preserves their investigation and review history.
-The last independent review covered through `ce637646`; its opener-cancellation and fixture-cleanup
-findings were fixed in `b3da3794`/`3c9f0b51`. Neither those fixes nor `6aca0609` have received a later
-independent review. No new delegation/review was requested for this continuation.
+Prior commit sequence: `2cfc5500`, `402dc5ce`, `ce637646`, `b3da3794`, `3c9f0b51`, `6812d134`,
+`6aca0609`, `d666a82a`. The report preserves their investigation and review history. The six-lane
+review covered the full range through `d666a82a`, including the old opener/fixture fixes and the
+bulk-string optimization. Four retained reviewers confirmed the subsequent `d5e621c4` resolutions.
+Review workflow IDs: `794f9578-b5e0-416b-8111-bdd2b958dad2` and
+`1dc723cc-6336-4bbd-b1d4-7d307cab5609`; all reviewer sessions were read-only.
 
 ## Next action
 

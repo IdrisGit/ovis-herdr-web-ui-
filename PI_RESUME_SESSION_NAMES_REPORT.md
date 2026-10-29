@@ -3,7 +3,7 @@
 ## Current status and continuation
 
 The implementation is committed on **`fix/pi-session-labels`**, through application/test commit
-**`6aca0609`**. It has not been pushed, opened as a PR, or merged. Read
+**`d5e621c4`**. It has not been pushed, opened as a PR, or merged. Read
 [PI_RESUME_SESSION_NAMES_HANDOFF.md](PI_RESUME_SESSION_NAMES_HANDOFF.md) before continuing.
 
 The manual findings supplied after handoff **`6812d134`** are recorded below. A synthetic
@@ -22,6 +22,71 @@ conversation/process caches elsewhere in Ovis are not precedent for this flow.
 metadata LRU, prefix hash, append checkpoint, retained retry progress, or shared in-flight answer.
 Do not reinstate those mechanisms to satisfy the initial plan without discussing a concrete need
 with the user. Resource and failure limits remain required.
+
+## Parallel review and complete resolution (`d5e621c4`)
+
+At the user's request, six independent read-only reviewers used the session's model,
+**`openai/gpt-6.1-sol-fast:xhigh`**, on the complete committed range
+`e604183814d0293b51c192122c256e4c46288fb5..d666a82a9e86ff62fcedaa8be61e7040e8f37486`.
+Their focuses were correctness, defensive coding/security, resources/performance, simplicity,
+tests/evidence, and integration/project policy. They found no P0/P1 issue. Two production P2 edge
+cases were independently reproduced by the parent with owned synthetic files; neither is an
+established explanation for the user's private-store symptom.
+
+The user then requested **all findings and optional cleanups** be fixed. The correction is
+`d5e621c4279dce95bd2ab0d700eea358b4a87f70`:
+
+| Review item | Resolution and regression coverage |
+| --- | --- |
+| Header cwd truncation could admit a foreign Windows session | Track any decoded string overflow, including whitespace, separately from display clipping. Over-limit cwd/ID fields are ineligible, not truncated identities. Exact-limit, overflow and padded-separator Windows listing tests cover the 16,384-code-unit bound. |
+| Falsy JSON preambles hid valid headers | Ignore native falsy roots, retain one character of root strings to preserve truthiness, and finalize primitive tokens at record boundaries. Test falsy/truthy preambles with trailing-whitespace and chunk variations, plus real listing eligibility. |
+| Malformed-UTF-8 test could pass after a later rename masked bad acceptance | Assert preservation of the good name immediately after malformed bytes in retained and ignored fields; keep recovery separately. |
+| Independent-deadline and ping tests depended on scheduling | Advance fake timers/monotonic time only after both readers reach their gates. Hold the responsiveness read until ping returns, then release it; failure cleanup settles the fetch and drains the reader. The aggregate performance test remains ungated. |
+| Missing shared-budget, queued-expiry and partial-response negative coverage | Add two-file aggregate expiry with one shared deadline, queued expiry without opening while both readers remain occupied, and surviving-waiter FIFO. The real API allows an actual first scan before second-scan refusal and checks an error-only 503 response. |
+| Changelog speed comparison exceeded its measured baseline | Remove the comparative-speed bullet; retain the demonstrated readable-label correction. |
+| Optional zero-retention bookkeeping | `Text.add()` returns immediately when its retention maximum is zero; validation remains outside accumulation. |
+| Optional per-escape lookup allocation | Hoist the unchanged escape lookup to one module-private readonly constant. |
+| Optional duplicate immediate deadline check | Remove the outer listing check and unused error import; keep reader admission, the shared deadline and all asynchronous-boundary checks. |
+
+The four original reviewers responsible for these findings/notes then resumed at inherited xhigh
+thinking for the bounded range `d666a82a..d5e621c4`. **All four confirmed their prior items resolved,
+with no new findings.** The defensive reviewer returned `OK`; correctness, test/evidence and
+simplicity returned `OK with notes` for outstanding verification/manual-QA limits. Reviews are
+source/evidence inspection, not reviewer-executed tests or authorization to publish/merge.
+
+Machine-local review workflows: initial `794f9578-b5e0-416b-8111-bdd2b958dad2`; fix follow-up
+`1dc723cc-6336-4bbd-b1d4-7d307cab5609`. Full child reports are in their session artifact outputs.
+The parent consolidation/reproduction brief is under `/tmp/ovis-pi-parallel-review.fgnYjZ/`;
+these artifacts are not committed or guaranteed to survive/transfer. This committed table records
+the findings and resolutions independently of those local artifacts.
+
+### Latest verification and negative controls
+
+On clean **`d5e621c4`**, serial isolated build + targeted/API/browser checks passed:
+
+- **136 targeted unit tests passed.**
+- **Seven isolated history API contract tests passed**, including second-scan refusal after a real row.
+- **Fresh build and session-history browser regression passed.**
+- Report: `node_modules/.cache/check/79036277-c45f-4775-8020-c9f162dbc8f7/report.json`.
+
+**Full fast checks remain failed**, with **8,680 pass, 35 skip, one unchanged failure** at
+`scripts/install-node-fallback.test.ts:299` (expected `[ node]`, received `[]` because the supposed
+Node-free PATH contains system Node). Workflow syntax, generated types/themes, typecheck and build
+passed. Fast report:
+`node_modules/.cache/check/a5c5c752-6f06-49ac-9c9b-e6d625345e50/report.json`.
+Both reports record clean `d5e621c4`, unchanged source and fingerprint
+`32c5d93e110f84fed7db6b935356d3b74300093cae7104aed0dfef10ffc9a254`.
+The isolated runner ended test-command processes; it reports no cleanup errors or retained state.
+These handoff/report updates follow that clean application-commit verification and are documentation only.
+
+The new production regressions failed before correction. Two temporary negative controls also failed
+as intended: making both UTF-8 decoders nonfatal produced a replacement-character name instead of
+preserving the good name; giving each file a fresh deadline made aggregate-expiry coverage resolve
+instead of reject. Both fault edits were restored before verification and are absent from the commit.
+
+Fresh uncached scans, resource limits, descriptor safety, permissions and other-provider behavior
+remain unchanged. No private-store retest, complete integration/browser lane or native Mac/Windows
+execution is established. No push, PR, merge, tag, installed-service change or preview restart occurred.
 
 ## Manual follow-up: aggregate scan timeout
 
@@ -69,7 +134,7 @@ Very large/slow or changing files can still produce the documented retryable err
 retest of the original store remains necessary to establish whether this correction addresses
 its exact failure.
 
-### Follow-up verification
+### Previous bulk-string correction verification
 
 On **clean `6aca06091b7d0ce6986a0953ee8cd5d807187b85`**:
 
@@ -92,8 +157,8 @@ plus the exact five-file diff committed as `6aca0609`, unchanged during executio
 
 Verification used Bun 1.4.4, herdr 0.9.5 and Node 26.7.0; the runner warns that CI pins Node 22.
 The later report/handoff documentation update is not part of the clean application-commit run.
-No new independent review was requested or performed. No push, PR, merge, tag, installed service
-change or user-preview restart occurred.
+At that stage no new independent review had run; the subsequent parallel review and fixes are
+recorded above. No push, PR, merge, tag, installed service change or user-preview restart occurred.
 
 ## Original finding at base `e6041838`
 
@@ -217,10 +282,10 @@ Addressed findings and cleanups:
   steps. Four injected failures cover workspace creation, server creation, server stop and workspace
   close against the isolated test session, with recovery of the deliberately unclosed owned workspace.
 
-The last independent review inspected `ce637646`. Its final two P2 findings were addressed in
-`b3da3794` and `3c9f0b51` and verified afterward. **Those follow-up commits have not received another
-independent reviewer pass.** The subsequent manual follow-up and its verification are above;
-that parser optimization has not received a new independent review either.
+Before the latest parallel review, the last independent pass inspected `ce637646`; its two P2
+findings were addressed in `b3da3794` and `3c9f0b51`. The six-lane review above subsequently covered
+the full range through `d666a82a`, including those fixes and the `6aca0609` parser optimization.
+The four retained follow-up reviewers then confirmed all accepted items resolved in `d5e621c4`.
 
 ## Previous handoff verification
 
