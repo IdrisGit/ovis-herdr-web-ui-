@@ -263,8 +263,11 @@ async function switchMode(page: Page, to: "line" | "direct"): Promise<void> {
   else await page.locator("[data-direct-typing]").waitFor({ state: "detached" });
   if (before.keyboard) {
     await ready(page);
-    await settled(page);
-    assert.deepEqual((await control(page)).grid, before.grid, `the switch under a keyboard keeps the grid (#1045)`);
+    // whatever the switch scheduled (a fit RESIZE_SETTLE_MS later) has run before the grid is read
+    await flushTimers(page);
+    const after = await control(page);
+    assert.deepEqual(after.grid, before.grid, `the switch under a keyboard keeps the grid (#1045)`);
+    assert.deepEqual(after.frames.slice(before.frames.length).filter((type) => type === "resize"), [], "and sends no resize");
     return;
   }
   await page.waitForFunction((rows) => document.querySelectorAll(".pane-frame:not(.is-hidden) .xterm-rows > div").length !== rows, before.grid.rows);
@@ -522,12 +525,13 @@ async function composingOrUnavailableTarget(browser: Browser): Promise<Record<st
     });
     const shellDraft = (frame: string) => frame === panes.shell ? ["git status", 4, 4] : ["", 0, 0];
     await flushTimers(page);
-    await keyOf(page).tap();
-    // this pane's Show stays in flight through the switch below: the clock holds still inside its
-    // settle window, the keyboard still measured down. A droplet the demo's turn raised would stay
-    // over the tab strip with the clock held: it is not drawn (as in openForCapture)
+    // this pane's Show stays in flight through the switch below: the clock holds still before the
+    // tap, inside its settle window, the keyboard still measured down. A droplet the demo's turn
+    // raised would stay over the tab strip with the clock held: it is not drawn (as in openForCapture)
     await page.addStyleTag({ content: ".droplet { visibility: hidden !important; }" });
     await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 200);
+    const inFlight = await tapAndState(page);
+    assert.deepEqual([inFlight.pressed, inFlight.label, inFlight.keyboard], ["true", "Hide keyboard", false], "the tapped pane's Show is in flight, the keyboard still measured down");
     const sibling = await focusedPane();
     assert.deepEqual(sibling, { active: "terminal-input-text", frame: shownFrame, draft: shellDraft(shownFrame), hiddenFocused: false }, `Show focuses the shown pane's own line, with its own draft, never the sibling's (${JSON.stringify(sibling)})`);
     // the other pane shown instead: its control focuses its line, with the draft and caret that line has

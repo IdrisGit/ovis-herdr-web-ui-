@@ -4,16 +4,18 @@ import { KEYBOARD_QUIET_MS, KEYBOARD_SETTLE_MS, type KeyboardClock, type Keyboar
 /** A clock the tests drive by hand: `goto` moves time, `fire` runs the armed settle timer, `live` names them. */
 const clockRig = (): { clock: KeyboardClock; goto: (at: number) => void; fire: () => void; live: () => number[] } => {
   let at = 0;
+  let next = 0;
   const timers = new Map<number, { run: () => void; ms: number }>();
   const fake: KeyboardClock = {
     now: () => at,
-    set: (run, ms) => { const id = timers.size + 1; timers.set(id, { run, ms }); return id; },
+    set: (run, ms) => { const id = ++next; timers.set(id, { run, ms }); return id; },
     clear: (id) => { timers.delete(id); },
   };
   return {
     clock: fake,
     goto: (value) => { at = value; },
-    fire: () => { for (const timer of [...timers.values()]) timer.run(); timers.clear(); },
+    // runs every timer armed so far (each once); one a run arms is left for the next fire
+    fire: () => { for (const [id, timer] of [...timers]) { if (!timers.delete(id)) continue; timer.run(); } },
     live: () => [...timers.values()].map((timer) => timer.ms),
   };
 };
@@ -22,7 +24,7 @@ const PANE = "pane-a";
 const SIBLING = "pane-b";
 /** A tap of `owner`'s control, with a field to blur and one to focus. */
 const tap = (owner: string) => ({ refused: false, hideTarget: true, showTarget: true, owner });
-const atRest = (measured: boolean): KeyboardControlState => ({ measured, intent: null, owner: null, agreedAt: null });
+const atRest = (measured: boolean): KeyboardControlState => ({ measured, intent: null, owner: null, stale: false, agreedAt: null });
 const pressing = (state: KeyboardControlState, action: "show" | "hide", at = 0): KeyboardControlState =>
   keyboardControlStep(state, { type: "press", action, owner: PANE, at });
 /** The store's derived pair as `owner`'s control reads it, deep-comparable. */
@@ -55,7 +57,7 @@ describe("keyboardControlStep", () => {
     expect(state.intent).toBe("hide");
     // the blur's hidden state keeps the word too: only the quiet hold or the settle clears it
     state = keyboardControlStep({ ...atRest(true), intent: "hide" }, { type: "hidden", at: 1_200 });
-    expect(state).toEqual({ measured: false, intent: "hide", owner: null, agreedAt: null });
+    expect(state).toEqual({ measured: false, intent: "hide", owner: null, stale: false, agreedAt: null });
     expect(keyboardControlView(state)).toEqual({ direction: "show", pending: true });
   });
 });
@@ -227,6 +229,64 @@ describe("keyboardControlStore", () => {
     expect(says(store, SIBLING)).toEqual(["hide", true]);
     expect(says(store, PANE)).toEqual(["show", false]); // one keyboard: the last tap, B's, holds the word
     expect(live()).toEqual([KEYBOARD_SETTLE_MS]);
+  });
+
+  test("a reversal whose value already agreed at the tap waits for the measurement to move, however long it holds", () => {
+    // regression (#2333 review, round 2): the old Hide animation can keep reading up past the quiet
+    // window after a Show; an unchanged value is no proof the keyboard stopped moving
+    const { clock, goto, fire } = clockRig();
+    const store = new KeyboardControlStore(clock);
+    store.measure(true);
+    goto(1_000);
+    expect(store.press(tap(PANE))).toBe("hide");
+    store.settled("hide", true);
+    store.measure(true);
+    goto(1_020);
+    expect(store.press(tap(PANE))).toBe("show");
+    store.measure(true);
+    goto(1_140);
+    store.measure(true); // the old animation, still above the threshold
+    goto(1_180);
+    store.measure(false); // and landing
+    expect(says(store)).toEqual(["hide", true]); // the last tap was Show: the control keeps its word
+    expect(store.press(tap(PANE))).toBe("hide");
+    expect(store.press(tap(PANE))).toBe("show"); // and it acts on what it says
+    goto(1_300);
+    store.measure(true);
+    goto(1_300 + KEYBOARD_QUIET_MS);
+    fire(); // the quiet window and the settle window, whichever comes
+    expect(says(store)).toEqual(["hide", false]);
+  });
+
+  test("a hold ends at its quiet window without a further measurement, so a later dismissal reads down", () => {
+    // regression (#2333 review, round 2): one up after Show and no further event; Android's back
+    // gesture then puts the keyboard away. The control (and the mode switch) must read it down
+    const { clock, goto, fire, live } = clockRig();
+    const store = new KeyboardControlStore(clock);
+    expect(store.press(tap(PANE))).toBe("show");
+    goto(20);
+    store.measure(true);
+    expect(live().sort()).toEqual([KEYBOARD_QUIET_MS, KEYBOARD_SETTLE_MS]);
+    goto(20 + KEYBOARD_QUIET_MS);
+    fire();
+    expect(says(store)).toEqual(["hide", false]);
+    expect(live()).toEqual([]); // confirmed: no timer is left
+    goto(300);
+    store.measure(false); // the back gesture
+    expect(says(store)).toEqual(["show", false]);
+  });
+
+  test("a pane that stops being shown gives up its tap in flight, and comes back reading the measurement", () => {
+    // regression (#2333 review, round 2): Show in A, B selected, A selected again inside the window
+    const { clock, live } = clockRig();
+    const store = new KeyboardControlStore(clock);
+    expect(store.press(tap(PANE))).toBe("show");
+    store.release(SIBLING); // another pane's release leaves A's word alone
+    expect(says(store)).toEqual(["hide", true]);
+    store.release(PANE);
+    expect(says(store)).toEqual(["show", false]);
+    expect(live()).toEqual([]);
+    expect(store.press({ ...tap(PANE), hideTarget: false })).toBe("show"); // its Show acts again
   });
 
   test("view() returns the same object until what it derives changes, and the stop leaves nothing notified", () => {

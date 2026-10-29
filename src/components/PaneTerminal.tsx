@@ -533,6 +533,12 @@ export function PaneTerminal({
   const keyboardOwner = `${keyboardInstance}:${paneId === null ? "" : paneStorageId(machineId, paneId)}`;
   const keyboardOwnerRef = useRef(keyboardOwner);
   keyboardOwnerRef.current = keyboardOwner;
+  // a tap still in flight when this pane stops being the selected, shown one (another pane picked,
+  // its tab left, or unmounted) is abandoned: coming back, its control reads the measurement
+  useEffect(() => {
+    if (!active || !presented) return;
+    return () => keyboardControl.release(keyboardOwner);
+  }, [active, presented, keyboardOwner]);
   useEffect(() => {
     if (!paneId || draftState.owner !== paneStorageId(machineId, paneId)) return;
     const key = `ovis:terminal-draft:${draftState.owner}`;

@@ -7,6 +7,7 @@
   after Android's back gesture (blur and refocus inside the tap; a focus alone raises nothing
   there), and the blur reads as the keyboard going where the measurement is blind (a zoomed page, a
   floating keyboard), the word standing through the hiding animation the measurement still reports.
-- Switching the key bar's Input line and direct typing on a touch screen no longer raises or puts
-  away the keyboard: with it up, the new mode's field takes it, focus and all; with it down
-  (including after Android's back gesture), the switch focuses nothing.
+- Switching the key bar's Input line and direct typing on a touch screen no longer raises a
+  keyboard the user put away (including after Android's back gesture), and with the keyboard up
+  the new mode's field takes it, focus and all. A keyboard the page cannot measure (an iPad's
+  floating keyboard, a zoomed page) counts as down there: Show brings it back after the switch.

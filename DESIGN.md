@@ -3198,11 +3198,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   is the panel at the screen's bottom with the way it goes next (`PanelBottomOpen` to show,
   `PanelBottomClose` to hide), its name says the same, and its `aria-pressed` is its tap's word
   (lib/keyboardControl.ts): a tap turns the control to what it will do next the moment it lands, the
-  measurement confirms that word once the keyboard, measured after the tap, has held still (a value
-  that already agreed before it, the last animation still in flight, is no answer to it), and a tap
+  measurement confirms that word once the keyboard, measured after the tap, has held still for the
+  quiet window (a value that already agreed before it, the last animation still in flight, is no
+  answer to it until the measurement has moved), and a tap
   does what the control just said, never the value in flight a mid-animation keyboard reports. The
   word is the tapping pane's own: another pane's control reads the measurement, so a pane shown
-  while a tap is in flight elsewhere says, and does, what it can do itself. That split of the tap's
+  while a tap is in flight elsewhere says, and does, what it can do itself, and a pane left while
+  its tap is in flight gives the word up. That split of the tap's
   word from the keyboard's value follows gmux, a web terminal client that moved keyboard presence
   from the field's focus to the viewport (its #307); the word it keeps is this app's addition.
   Hide's blur, which leaves no field focused anywhere, is itself the keyboard going where the
@@ -3227,9 +3229,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the control says it is. Up (or on its way up from this pane's tap), the switch hands it to the new
   mode's field, focus and all, so it stays up where the user had it; down, the switch focuses
   nothing, though the old field kept the focus (Android's back gesture leaves it so), since a focus
-  would raise the keyboard the user put away. A hardware keyboard, which the measurement reads as
-  down, gets the new field by a tap. Only a switch the user made does it (a pane's remount keeps
-  its own blur).
+  would raise the keyboard the user put away. The switch trusts the measurement where it is blind:
+  a hardware keyboard, an iPad's floating keyboard or a zoomed page reads as down, so the new
+  field is not focused and, for a soft keyboard, the switch puts it away with the old field; a tap
+  on Show (or the field) brings it back. Only a switch the user made does it (a pane's remount
+  keeps its own blur).
   Unlike the keys, which a hardware keyboard already has, the control is a Tab stop (after the
   input line and its Enter button) that Enter or Space presses, and its name is also its tooltip.
   Without a field it may focus (view only, held, ended, offline) the bar has no control or a

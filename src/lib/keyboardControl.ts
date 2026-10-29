@@ -45,6 +45,11 @@ export interface KeyboardControlState {
   /** the pane whose control made the tap in flight: the word is that control's alone */
   owner: string | null;
   /**
+   * the value measured at the tap already agreed with it (a reversal during the last animation):
+   * that value is no answer to the tap until the measurement has moved away from it once
+   */
+  stale: boolean;
+  /**
    * when a measurement taken after the tap first read the value the intent wants, every one since
    * reading it too; null until then, and again at each measurement that disagrees
    */
@@ -63,6 +68,8 @@ export type KeyboardControlEvent =
   | { type: "press"; action: KeyboardDirection; owner: string; at: number }
   /** the tap's settle window ended: the measurement takes over whatever it says */
   | { type: "settle"; at: number }
+  /** the quiet window after the last agreeing measurement ran out with no event against it */
+  | { type: "quiet"; at: number }
   /** the tap's blur left no typing field focused anywhere: the keyboard is going */
   | { type: "hidden"; at: number };
 
@@ -70,28 +77,34 @@ export type KeyboardControlEvent =
 const wants = (intent: KeyboardDirection): boolean => intent === "show";
 
 /** No tap in flight: the measurement decides alone. */
-const AT_REST: KeyboardControlState = { measured: false, intent: null, owner: null, agreedAt: null };
+const AT_REST: KeyboardControlState = { measured: false, intent: null, owner: null, stale: false, agreedAt: null };
 
 /**
  * One step of the machine, free of DOM and clock. A measurement clears an intent it agrees with
- * only once the agreeable value, measured after the tap, has held still; a tap replaces the intent
- * and its owner, last tap wins; a settle window catches what the measurement never confirmed; a
- * hidden state is a dismissal seen at the focus, where a measurement can be blind.
+ * only once the agreeable value, measured after the tap and not left over from before it, has held
+ * still for the quiet window (a later measurement or the quiet timer ends it); a tap replaces the
+ * intent and its owner, last tap wins; a settle window catches what the measurement never
+ * confirmed; a hidden state is a dismissal seen at the focus, where a measurement can be blind.
  */
 export function keyboardControlStep(state: KeyboardControlState, event: KeyboardControlEvent): KeyboardControlState {
   switch (event.type) {
     case "measure": {
       if (state.intent === null) return { ...state, measured: event.up };
       // a value that disagrees (the overshoot inside a hide, the last animation landing) restarts the
-      // hold: the next agreeing measurement starts it again
-      if (event.up !== wants(state.intent)) return { ...state, measured: event.up, agreedAt: null };
+      // hold, and is the move a stale value waited for
+      if (event.up !== wants(state.intent)) return { ...state, measured: event.up, stale: false, agreedAt: null };
+      // the value from before the tap, still unmoved: the old animation may yet carry it away
+      if (state.stale) return { ...state, measured: event.up };
       const agreedAt = state.agreedAt ?? event.at;
       return event.at - agreedAt >= KEYBOARD_QUIET_MS ? { ...AT_REST, measured: event.up } : { ...state, measured: event.up, agreedAt };
     }
+    case "quiet":
+      return state.intent !== null && state.agreedAt !== null && event.at - state.agreedAt >= KEYBOARD_QUIET_MS
+        ? { ...AT_REST, measured: state.measured } : state;
     case "press":
       // one intent at a time, the last tap's: a double tap cannot queue two moves, and what was
       // measured before this tap is no answer to it
-      return { ...state, intent: event.action, owner: event.owner, agreedAt: null };
+      return { ...state, intent: event.action, owner: event.owner, stale: state.measured === wants(event.action), agreedAt: null };
     case "settle":
       return { ...AT_REST, measured: state.measured };
     case "hidden": // the blur says the keyboard is going; the tap's word stands till it settles or confirms
@@ -151,6 +164,7 @@ export class KeyboardControlStore {
   private state: KeyboardControlState = AT_REST;
   private listeners = new Set<() => void>();
   private timer: number | null = null;
+  private quietTimer: number | null = null;
 
   constructor(clock: KeyboardClock = defaultClock) {
     this.clock = clock;
@@ -192,13 +206,37 @@ export class KeyboardControlStore {
     this.apply({ type: "hidden", at: this.clock.now() });
   };
 
+  /**
+   * The pane stopped being the one shown and selected: a tap of its still in flight is abandoned
+   * (its field is blurred or inert), so the control it comes back to reads the measurement again.
+   */
+  release = (owner: string): void => {
+    if (this.state.intent === null || this.state.owner !== owner) return;
+    this.apply({ type: "settle", at: this.clock.now() });
+  };
+
   private apply(event: KeyboardControlEvent): void {
     const before = this.state;
     const state = keyboardControlStep(before, event);
     this.state = state;
+    // the timers follow the state: no intent, no settle window; a hold that started (or restarted)
+    // gets its own quiet window, which a viewport that sends no further event still ends
+    if (state.intent === null) this.cancel();
+    if (state.intent === null || state.agreedAt === null) this.cancelQuiet();
+    else if (state.agreedAt !== before.agreedAt || this.quietTimer === null) {
+      this.cancelQuiet();
+      const wait = Math.max(0, state.agreedAt + KEYBOARD_QUIET_MS - this.clock.now());
+      this.quietTimer = this.clock.set(() => { this.quietTimer = null; this.apply({ type: "quiet", at: this.clock.now() }); }, wait);
+    }
     // what any control's view reads: a quiet hold that only moves agreedAt notifies no one
     if (state.measured === before.measured && state.intent === before.intent && state.owner === before.owner) return;
     for (const listener of this.listeners) listener();
+  }
+
+  private cancelQuiet(): void {
+    if (this.quietTimer === null) return;
+    this.clock.clear(this.quietTimer);
+    this.quietTimer = null;
   }
 
   private arm(): void {
