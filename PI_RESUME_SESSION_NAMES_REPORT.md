@@ -6,10 +6,10 @@ The implementation is committed on **`fix/pi-session-labels`**, through applicat
 **`d5e621c4`**. It has not been pushed, opened as a PR, or merged. Read
 [PI_RESUME_SESSION_NAMES_HANDOFF.md](PI_RESUME_SESSION_NAMES_HANDOFF.md) before continuing.
 
-The manual findings supplied after handoff **`6812d134`** are recorded below. A synthetic
-reproduction and scoped parser optimization are verified. **The user's original openwhispr store
-has not been retested with that optimization:** do not claim its observed failure is resolved
-solely from synthetic passes.
+The original findings after handoff **`6812d134`**, synthetic reproduction, fixes and reviews are
+recorded below. **The user's follow-up video now shows a successful manual retest of the previously
+failing openwhispr listing flow**, alongside Ovis's own history. This is evidence for the demonstrated
+local flow, not a guarantee for arbitrary stores or a substitute for the remaining required checks.
 
 ### Superseded recommendation: caching
 
@@ -22,6 +22,24 @@ conversation/process caches elsewhere in Ovis are not precedent for this flow.
 metadata LRU, prefix hash, append checkpoint, retained retry progress, or shared in-flight answer.
 Do not reinstate those mechanisms to satisfy the initial plan without discussing a concrete need
 with the user. Resource and failure limits remain required.
+
+## Successful manual retest: `2026-10-30 01-00-37.mp4`
+
+After receiving instructions to rebuild/restart the local `8bf56cb7` preview, the user supplied
+`/home/idris/Videos/2026-10-30 01-00-37.mp4` and reported it seemed to work fine. The roughly
+61-second recording shows the same `http://127.0.0.1:17318` origin and Pi 1.4.0 banner:
+
+- Around **18 s**, Ovis's Earlier sessions dialog displays readable labels and existing-session actions.
+- Around **45–48 s**, openwhispr's Earlier sessions displays readable labels, its already-open row,
+  and older entries while the user scrolls, instead of the previous read error.
+- Around **57 s**, opening Earlier sessions again from the existing Pi chat also displays its rows.
+
+The demonstrated listing flow is a **manual pass**: the previous read error is not reproduced in
+these attempts. The clip does not establish exhaustive validation of all native sessions, actual
+Resume launches, rename/clear behavior, or request latency. The checkout was clean at `8bf56cb7`
+when inspected; the video itself does not display the backend commit, so no independent running-build
+identity is claimed beyond the supplied retest context. No code/services or live panes were driven
+by the agent. Private video contents were not copied into fixtures or committed media.
 
 ## Parallel review and complete resolution (`d5e621c4`)
 
@@ -85,8 +103,9 @@ preserving the good name; giving each file a fresh deadline made aggregate-expir
 instead of reject. Both fault edits were restored before verification and are absent from the commit.
 
 Fresh uncached scans, resource limits, descriptor safety, permissions and other-provider behavior
-remain unchanged. No private-store retest, complete integration/browser lane or native Mac/Windows
-execution is established. No push, PR, merge, tag, installed-service change or preview restart occurred.
+remain unchanged. The later user-provided manual retest is recorded above; complete integration/browser
+and native Mac/Windows execution remain unestablished. No push, PR, merge, tag, installed-service
+change or agent-driven preview restart occurred.
 
 ## Manual follow-up: aggregate scan timeout
 
@@ -130,9 +149,9 @@ promise of latency on arbitrary stores. New parser tests cover all 32 forbidden 
 inside a large ignored string and clipping/escape behavior across chunk boundaries. A real
 HTTP contract on the isolated herdr runner independently lists a similarly sized 202-session
 store and observes an appended rename on reopening. Existing browser coverage remains unchanged.
-Very large/slow or changing files can still produce the documented retryable error. A manual
-retest of the original store remains necessary to establish whether this correction addresses
-its exact failure.
+Very large/slow or changing files can still produce the documented retryable error. At this stage,
+a manual retest of the original store was still required; the later successful listing retest is
+recorded above, without claiming proof of the earlier exact error cause.
 
 ### Previous bulk-string correction verification
 
@@ -323,10 +342,9 @@ new source edits and follow repository verification requirements before any push
 
 ## Next action
 
-Have the user restart their manually started throwaway backend from this branch (not the installed
-app or always-on main service), then repeat the video's openwhispr Chat `/resume` flow. A backend
-already running `6812d134` does not acquire the parser correction from a browser reload. Record
-whether the real store now lists successfully; if it still errors, obtain sanitized aggregate
-metadata or an explicitly authorized read-only diagnosis before choosing another correction.
-Do not introduce caching or claim complete resolution merely because synthetic regressions pass.
-No preview was started or restarted by this continuation, and the always-on main app was untouched.
+The manual listing retest now passes the demonstrated flow; no further runtime correction is
+indicated by the new video. Before any authorized publication, keep the known fast-check failure
+explicit and satisfy the remaining required integration/browser/native-Windows checks. Confirm the
+exact running build if stronger manual-QA provenance is needed. Do not publish, merge or change
+services without authorization. Preserve the uncached design; investigate any new report from its
+own symptom/build/reproduction evidence rather than assuming every store or workflow was verified.

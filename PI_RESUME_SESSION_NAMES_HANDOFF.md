@@ -8,12 +8,12 @@
   The following documentation commit updates this handoff and the report; consult `git log`.
 - The existing implementation and review fixes were preserved, not restarted.
 - The branch remains local, with no configured upstream. No push, PR, merge, tag, installed-service
-  change, user-preview restart or live-pane automation occurred. Publication requires permission.
+  change, agent-driven preview restart or live-pane automation occurred. Publication requires permission.
 - Read [PI_RESUME_SESSION_NAMES_REPORT.md](PI_RESUME_SESSION_NAMES_REPORT.md), plus `AGENTS.md`,
   `server/AGENTS.md`, `src/AGENTS.md`, `CONTRIBUTING.md`, `.github/REVIEW.md` and
   `docs/development.md` before further work. Check `git status` for later user/session changes.
 
-## Manual findings are now supplied; original-store retest is pending
+## Manual findings and successful listing retest
 
 The user supplied `/home/idris/Videos/2026-10-29 23-02-08.mp4` and confirmed the tested build was
 `6812d134`, with browser/backend/store on **this laptop**, Pi **1.4.0**, and no additional symptoms
@@ -28,11 +28,17 @@ Observed sequence:
 3. Switch that pane to Terminal and use native `/resume`: readable entries and a **202-session**
    count appear (~28–31 s).
 
-**Do not claim the private-store failure is resolved.** Synthetic fixtures reproduce an aggregate
-scan timeout and now pass, but no private transcript was scanned/copied for this continuation and
-no post-fix manual retry has been reported. A count of 202 does not establish the user's byte sizes
-or prove which retryable failure occurred. The video was only inspected; its text/media are not
-regression fixtures or repository artifacts.
+The later `/home/idris/Videos/2026-10-30 01-00-37.mp4` is a **successful manual retest of the
+shown listing flow**. The user reports it seems fine. It shows readable Ovis history around 18 s,
+readable openwhispr history and scrolling around 45–48 s, and a successful reopening from the
+existing Pi chat around 57 s, with no previous read error in these attempts.
+
+This followed instructions to rebuild/restart the local `8bf56cb7` preview. The clip uses the same
+`:17318` origin and shows Pi 1.4.0; the checkout was clean at `8bf56cb7` during inspection. The clip
+itself does not show the backend commit, so do not invent stronger running-build provenance or
+claim exhaustive native-session/Resume/rename/latency validation. No private transcript was copied
+into fixtures or committed media. A 202-session count never established the user's byte sizes or
+proved the exact earlier error cause. The agent only inspected the supplied videos, not live panes.
 
 ## Scoped follow-up correction
 
@@ -145,11 +151,11 @@ Review workflow IDs: `794f9578-b5e0-416b-8111-bdd2b958dad2` and
 
 ## Next action
 
-Have the user restart their **manually started throwaway backend from this branch**, not the
-installed app or always-on main service, and repeat the video's openwhispr Chat `/resume` flow.
-Reloading the browser does not update a backend still running `6812d134`. Record the result before
-claiming the observed issue resolved. If it still fails, get sanitized aggregate metadata or explicit
-authorization for a read-only diagnosis; do not invent a new symptom or silently introduce caching.
+The new manual video passes the originally failing listing flow; no additional runtime correction
+is indicated by it. Before authorized publication, resolve/disclose the known fast-check failure
+and obtain the remaining required integration/browser/native-Windows checks. Confirm the exact
+running build if stronger manual-QA provenance is needed. Treat a new failure as its own report,
+using sanitized metadata or authorized read-only diagnosis; never invent symptoms or add caching.
 
 If further code changes are needed, repeat the affected checks serially:
 
