@@ -4733,15 +4733,26 @@ describe("GET /api/sessions/history", () => {
       for (let n = 0; n < 17; n++) appendFileSync(file, block);
       appendFileSync(file, line({ type: "session_info", name: "After bounded scan" }));
       expect((await listing())[0]).toMatchObject({ title: "After bounded scan", firstMessage: "Late prompt" });
-      // Reader deadline/admission behavior has isolated unit coverage; check its actual HTTP envelope here.
+      // Fail the second scan after a real first row, rather than refusing before any rows exist.
+      const older = join(dirname(file), "older.jsonl");
+      writeFileSync(older, initial.replace("pi-history-fixture", "pi-history-older"));
+      utimesSync(older, 1, 1);
       const { PiSessionReader, PiMetadataBusy } = await import("./pi-session-metadata.ts");
-      const refusedRead = spyOn(PiSessionReader.prototype, "read").mockRejectedValueOnce(new PiMetadataBusy());
+      const originalRead = PiSessionReader.prototype.read;
+      let firstComplete = false;
+      const refusedRead = spyOn(PiSessionReader.prototype, "read").mockImplementationOnce(function (this: InstanceType<typeof PiSessionReader>, ...args: Parameters<typeof originalRead>) {
+        return originalRead.apply(this, args).then((label) => { firstComplete = label?.header?.id === "pi-history-fixture"; return label; });
+      }).mockRejectedValueOnce(new PiMetadataBusy());
       try {
         const busy = await fetch(url);
+        expect(firstComplete).toBe(true);
+        expect(refusedRead).toHaveBeenCalledTimes(2);
         expect(busy.status).toBe(503);
         expect(busy.headers.get("retry-after")).toBe("1");
         expect(busy.headers.get("cache-control")).toBe("no-store");
-        expect(await busy.json()).toMatchObject({ error: { code: "session_history_busy" } });
+        const body = await busy.json();
+        expect(body).toMatchObject({ error: { code: "session_history_busy" } });
+        expect(body).not.toHaveProperty("sessions");
       } finally { refusedRead.mockRestore(); }
     });
   }, 20_000);

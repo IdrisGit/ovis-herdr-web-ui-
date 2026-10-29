@@ -258,7 +258,9 @@ within each read chunk; quotes, escapes and control characters are still checked
 fields or beyond the retained label. Malformed records and nesting deeper than
 64 levels are skipped through their newline. Incomplete final records are ignored; a valid final
 record needs no newline, matching Pi. BOM-prefixed records are rejected rather than silently
-stripping the BOM before JSON validation.
+stripping the BOM before JSON validation. Native falsy JSON preambles are ignored; the first truthy
+record must be a session header. Header cwd/ID strings exceeding 16 KiB are refused rather than
+matched or returned as truncated identities; display-label clipping remains separate.
 
 Like the other agents' Earlier sessions readers, Pi reads metadata fresh on every listing. There
 is no result cache, append-prefix hash, retained parser checkpoint, or shared in-flight answer.
@@ -276,9 +278,11 @@ request's deadline, and reopening does not accumulate progress. There is no auto
 scan or persisted format. Server stop refuses queued/in-flight requests; a filesystem call
 already in progress keeps its slot and descriptor until it returns and closes. The synthetic
 `server/pi-session-metadata.test.ts` instruments repeated fresh reads, resource bounds and a
-server answering a ping during a 20 MiB listing. Its 202-session fixture also reads the newest 50
-long transcripts (about 200 MiB together) twice under the ordinary deadline, counting both fresh
-scans; the isolated history API contract covers a similarly sized store.
+server answering a ping while a 20 MiB listing is held at a controlled read gate. Deterministic
+clock/timer cases cover aggregate listing expiry, independent deadlines, queued expiry without
+opening and FIFO admission. The ungated 202-session fixture reads the newest 50 long transcripts
+(about 200 MiB together) twice under the ordinary deadline, counting both fresh scans; the isolated
+history API contract covers a similarly sized store and error-only refusal after an earlier row.
 
 ## Codex Send now
 

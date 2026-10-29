@@ -6,7 +6,8 @@
  *
  * Strings (including image data) are validated without buffering them. Selected strings retain
  * only their first 2001 non-leading-whitespace characters (201 for names); header fields retain
- * at most 16 KiB. Keys, numbers and nesting are bounded too. Malformed records, including records
+ * at most 16 KiB; overflowing cwd/id fields are refused, never used as truncated identities.
+ * Keys, numbers and nesting are bounded too. Malformed records, including records
  * deeper than 64 levels, are discarded through the next newline, never hiding later records.
  */
 type Json = Record<string, unknown>;
@@ -15,15 +16,18 @@ const object = (value: unknown): Json => value !== null && typeof value === "obj
 class Text {
   value = "";
   leading = "";
+  overflowed = false;
   private beyond = false;
   constructor(readonly max: number, readonly trimLeading = false) {}
   add(text: string): void {
+    if (this.max === 0) return;
     if (this.trimLeading && this.value === "") {
       const trimmed = text.trimStart();
       if (this.leading.length < this.max) this.leading += text.slice(0, Math.min(text.length - trimmed.length, this.max - this.leading.length));
       text = trimmed;
     }
     const remaining = this.max - this.value.length;
+    if (text.length > remaining) this.overflowed = true;
     if (text.slice(remaining).trim() !== "") this.beyond = true;
     if (remaining > 0) this.value += text.slice(0, remaining);
   }
@@ -37,6 +41,7 @@ const KEYS: Record<Mode, readonly string[]> = {
   root: ["type", "version", "id", "cwd", "timestamp", "name", "message"],
   message: ["role", "content"], block: ["type", "text"], content: [], ignore: [],
 };
+const ESCAPED: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
 /** One JSON value, consumed incrementally; no value is published until its entire record is valid. */
 class Projection {
@@ -96,9 +101,8 @@ class Projection {
           this.escape = false;
           if (char === "u") this.unicode = "";
           else {
-            const escaped: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
-            if (escaped[char] === undefined) this.invalid = true;
-            else this.string.add(escaped[char]!);
+            if (ESCAPED[char] === undefined) this.invalid = true;
+            else this.string.add(ESCAPED[char]!);
           }
         } else if (char === "\\") this.escape = true;
         else if (char === '"') {
@@ -109,7 +113,8 @@ class Projection {
             frame.state = "colon";
           } else {
             const frame = this.frames.at(-1);
-            this.accept(frame?.mode === "block" && frame.key === "text" ? this.string : this.string.retained());
+            if (frame?.mode === "root" && (frame.key === "cwd" || frame.key === "id") && this.string.overflowed) this.accept(null);
+            else this.accept(frame?.mode === "block" && frame.key === "text" ? this.string : this.string.retained());
           }
         } else if (char.charCodeAt(0) < 32) this.invalid = true;
         else {
@@ -155,8 +160,10 @@ class Projection {
       if (this.key && char !== '"') { this.invalid = true; continue; }
       if (char === '"') {
         this.token = "string";
-        const keep = this.key || (!!frame && KEYS[frame.mode].includes(frame.key));
-        const max = this.key ? 64 : frame?.mode === "root" && frame.key === "name" ? 201
+        // A root string keeps one character to distinguish native falsy preambles from
+        // truthy non-headers; ignored object fields still retain no string content.
+        const keep = !frame || this.key || KEYS[frame.mode].includes(frame.key);
+        const max = !frame ? 1 : this.key ? 64 : frame.mode === "root" && frame.key === "name" ? 201
           : frame?.mode === "block" || frame?.mode === "message" ? 2001 : 16384;
         this.string = new Text(keep ? max : 0, !this.key && (frame?.key === "name" || frame?.key === "content" || (frame?.mode === "block" && frame.key === "text")));
       } else if (char === "{" || char === "[") this.begin(char === "[");
@@ -172,7 +179,8 @@ class Projection {
   }
 
   complete(): Json | null {
-    return this.token === null && !this.invalid && this.ended && this.frames.length === 0 ? object(this.result) : null;
+    if (this.token === "primitive") this.finishPrimitive();
+    return this.token === null && !this.invalid && this.ended && this.frames.length === 0 && this.result ? object(this.result) : null;
   }
 }
 
@@ -186,7 +194,7 @@ const usable = (value: unknown): string | null => typeof value === "string" && v
 function apply(label: PiLabel, value: Json | null): PiLabel {
   if (value === null) return label;
   if (label.header === null) {
-    // As in Pi's listing, the first parsed record must be a session header.
+    // As in Pi's listing, the first truthy parsed record must be a session header.
     if (value.type !== "session") return { ...label, header: { id: "", cwd: "", timestamp: null, version: null } };
     return { ...label, header: {
       id: typeof value.id === "string" && value.id.trim() !== "" ? value.id : "",

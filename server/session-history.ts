@@ -35,7 +35,7 @@ import { directoryKey, interactiveCodexRollout, storedCwds, withoutVerbatimPrefi
 import { hermesHome } from "./hermes-home.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
 import { environmentHome } from "./user-home.ts";
-import { defaultPiSessionReader, PI_READ_DEADLINE_MS, PiMetadataBusy, type PiSessionReader } from "./pi-session-metadata.ts";
+import { defaultPiSessionReader, PI_READ_DEADLINE_MS, type PiSessionReader } from "./pi-session-metadata.ts";
 
 /** At most this much of any one non-Pi file is read. */
 export const HEAD_BYTES = 64 * 1024;
@@ -501,7 +501,6 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
   const rows: Row[] = [];
   for (const file of files) {
     if (rows.length >= MAX_ROWS) break;
-    if (performance.now() >= deadline) throw new PiMetadataBusy();
     const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), deadline);
     const header = label?.header;
     if (!header || !PI_VERSIONS.has(header.version) || header.id === "" || header.cwd === "" || !cwdMatches(budget, header.cwd, cwds)) continue;

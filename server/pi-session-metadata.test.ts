@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, jest, mock, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import { appendFileSync, fstatSync, mkdirSync, mkdtempSync, openSync, read, realpathSync, renameSync, rmSync, statSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +25,7 @@ afterEach(async () => {
   for (const release of releases.splice(0)) release();
   await Promise.all(closing.map((reader) => reader.idle()));
   mock.restore();
+  jest.useRealTimers();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
@@ -58,6 +59,42 @@ const parsed = (body: string, chunk = 7) => {
 };
 
 describe("Pi native label semantics", () => {
+  it("skips native falsy JSON preambles before a valid header, with or without trailing whitespace", async () => {
+    const f = fixture();
+    const body = header() + prompt("visible prompt");
+    for (const value of ['""', "null", "false", "0", "-0"]) {
+      for (const whitespace of ["", " ", "\t"]) {
+        const transcript = `${value}${whitespace}\n${body}`;
+        for (const chunk of [1, 7, PI_CHUNK_BYTES]) {
+          expect(parsed(transcript, chunk)).toMatchObject({ header: { id: "fixture" }, firstMessage: "visible prompt" });
+        }
+        writeFileSync(f.file, transcript);
+        expect((await f.list())[0]).toMatchObject({ id: "fixture", firstMessage: "visible prompt" });
+      }
+    }
+  });
+
+  it("refuses a truthy non-header preamble instead of skipping its projected value", () => {
+    for (const value of ['"not a header"', '" "', '"\\u0000"', "true", "1", "-1", "[]", "{}"]) {
+      for (const whitespace of ["", " "]) {
+        for (const chunk of [1, 7, PI_CHUNK_BYTES]) {
+          expect(parsed(`${value}${whitespace}\n${header()}`, chunk).header?.id).toBe("");
+        }
+      }
+    }
+  });
+
+  it("retains exact bounded header identities but never substitutes an overflowing prefix", () => {
+    for (const field of ["id", "cwd"] as const) {
+      for (const chunk of [1, PI_CHUNK_BYTES]) {
+        const exact = { type: "session", version: 3, id: "fixture", cwd: process.cwd(), [field]: "x".repeat(16384) };
+        expect(parsed(line(exact), chunk).header?.[field]).toBe(exact[field]);
+        expect(parsed(line({ ...exact, [field]: exact[field] + " " }), chunk).header?.[field]).toBe("");
+        expect(parsed(line({ ...exact, [field]: exact[field] + "other" }), chunk).header?.[field]).toBe("");
+      }
+    }
+  });
+
   it("uses latest names, trims them, clears them explicitly and ignores extension titles", () => {
     const body = header() + prompt(" First prompt ") + name("old") + line({ type: "title", title: "not a Pi name" });
     expect(parsed(body).title).toBe("old");
@@ -118,7 +155,23 @@ describe("Pi native label semantics", () => {
     }
   });
 
-  it("rejects malformed UTF-8 records and waits for complete JSON across chunks", () => {
+  it("rejects malformed UTF-8 inside retained and ignored fields without relying on a later rename", () => {
+    for (const ignored of [false, true]) {
+      const prefix = ignored ? '{"type":"session_info","name":"bad","ignored":"' : '{"type":"session_info","name":"';
+      for (const bad of [[0xff], [0xc0, 0xaf], [0xe2], [0xe2, 0x28, 0xa1], [0xed, 0xa0, 0x80]]) {
+        for (const newline of ["", "\n"]) {
+          const bytes = Buffer.concat([Buffer.from(header() + name("good") + prefix), Buffer.from(bad), Buffer.from(`"}${newline}`)]);
+          for (const chunk of [1, 7, PI_CHUNK_BYTES]) {
+            const parser = new PiLabelParser();
+            for (let at = 0; at < bytes.length; at += chunk) parser.feed(bytes.subarray(at, at + chunk));
+            expect(parser.finish().title).toBe("good");
+          }
+        }
+      }
+    }
+  });
+
+  it("recovers after malformed UTF-8 and waits for complete JSON across chunks", () => {
     const parser = new PiLabelParser();
     parser.feed(Buffer.from(header() + name("good")));
     parser.feed(Buffer.concat([Buffer.from('{"type":"session_info","name":"'), Buffer.from([0xff]), Buffer.from('"}\n')]));
@@ -289,6 +342,9 @@ describe("Pi fresh streaming reader", () => {
   });
 
   it("keeps independent deadlines for concurrent reads of the same file and closes only after outstanding I/O", async () => {
+    jest.useFakeTimers();
+    let now = 0;
+    const clock = spyOn(performance, "now").mockImplementation(() => now);
     const entered = Promise.withResolvers<void>();
     const release = ioGate();
     const descriptors = new Set<number>();
@@ -299,14 +355,16 @@ describe("Pi fresh streaming reader", () => {
       return new Promise((done, fail) => read(fd, buffer, 0, length, position, (error, count) => error ? fail(error) : done(count)));
     } });
     writeFileSync(f.file, header() + prompt("independent"));
-    const long = f.reader.read(() => openSync(f.file, "r"), performance.now() + 2000);
+    const long = f.reader.read(() => openSync(f.file, "r"), now + 2000);
     const longOutcome = long.catch((error: unknown) => error);
-    // The elapsed deadline is the behavior under test, not a wait for unrelated work.
-    const short = f.reader.read(() => openSync(f.file, "r"), performance.now() + 50);
+    const short = f.reader.read(() => openSync(f.file, "r"), now + 50);
     const shortOutcome = short.catch((error: unknown) => error);
     try {
+      // Filesystem setup cannot consume the short budget before both reads are held.
       await entered.promise;
       expect(short).not.toBe(long);
+      now = 51;
+      jest.advanceTimersByTime(51);
       expect(await shortOutcome).toBeInstanceOf(PiMetadataBusy);
       for (const fd of descriptors) expect(fstatSync(fd).isFile()).toBe(true);
       expect(f.reader.size().active).toBe(2);
@@ -317,9 +375,93 @@ describe("Pi fresh streaming reader", () => {
       release.resolve();
       await Promise.all([longOutcome, shortOutcome]);
       await f.reader.idle();
+      clock.mockRestore();
+      jest.useRealTimers();
     }
     for (const fd of descriptors) expect(() => fstatSync(fd)).toThrow();
     expect(f.reader.size().active).toBe(0);
+  });
+
+  it("expires a queued request without opening it and admits surviving waiters in FIFO order", async () => {
+    jest.useFakeTimers();
+    let now = 0;
+    const clock = spyOn(performance, "now").mockImplementation(() => now);
+    const entered = Promise.withResolvers<void>();
+    const release = ioGate();
+    const descriptors = new Set<number>();
+    const f = fixture({ read: async (fd, buffer, length, position) => {
+      descriptors.add(fd);
+      if (descriptors.size === PI_READERS) entered.resolve();
+      await release.promise;
+      return new Promise((done, fail) => read(fd, buffer, 0, length, position, (error, count) => error ? fail(error) : done(count)));
+    } });
+    writeFileSync(f.file, header());
+    const active = Array.from({ length: PI_READERS }, () => f.reader.read(() => openSync(f.file, "r"), now + 2000).catch((error: unknown) => error));
+    const outcomes = [...active];
+    let expiredOpens = 0;
+    try {
+      await entered.promise;
+      const expired = f.reader.read(() => { expiredOpens++; return openSync(f.file, "r"); }, now + 50).catch((error: unknown) => error);
+      outcomes.push(expired);
+      expect(f.reader.size()).toEqual({ active: PI_READERS, waiting: 1 });
+      now = 51;
+      jest.advanceTimersByTime(51);
+      expect(await expired).toBeInstanceOf(PiMetadataBusy);
+      expect(expiredOpens).toBe(0);
+      expect(f.reader.size()).toEqual({ active: PI_READERS, waiting: 0 });
+      const order: number[] = [];
+      const surviving = [1, 2].map((n) => f.reader.read(() => { order.push(n); return openSync(f.file, "r"); }, now + 2000).catch((error: unknown) => error));
+      outcomes.push(...surviving);
+      expect(order).toEqual([]);
+      release.resolve();
+      expect(await Promise.all([...active, ...surviving])).toMatchObject(Array.from({ length: PI_READERS + 2 }, () => ({ header: { id: "fixture" } })));
+      expect(order).toEqual([1, 2]);
+      expect(expiredOpens).toBe(0);
+      expect(f.reader.size()).toEqual({ active: 0, waiting: 0 });
+    } finally {
+      f.reader.close();
+      release.resolve();
+      await Promise.all(outcomes);
+      await f.reader.idle();
+      clock.mockRestore();
+      jest.useRealTimers();
+    }
+    for (const fd of descriptors) expect(() => fstatSync(fd)).toThrow();
+  });
+
+  it("shares one deadline across files instead of returning rows collected before aggregate expiry", async () => {
+    jest.useFakeTimers();
+    let now = 0;
+    const clock = spyOn(performance, "now").mockImplementation(() => now);
+    let reads = 0;
+    const f = fixture({ read: (fd, buffer, length, position) => new Promise((done, fail) => {
+      read(fd, buffer, 0, length, position, (error, count) => {
+        // Each small file uses less than the budget, but both together exceed it.
+        reads++;
+        now += PI_READ_DEADLINE_MS * 0.75;
+        if (error) fail(error); else done(count);
+      });
+    }) });
+    writeFileSync(f.file, header("newer") + name("first row"));
+    utimesSync(f.file, 2, 2);
+    const other = join(f.folder, "other.jsonl");
+    writeFileSync(other, header("older") + name("second row"));
+    utimesSync(other, 1, 1);
+    const deadlines: number[] = [];
+    const original = f.reader.read.bind(f.reader);
+    const requested = spyOn(f.reader, "read").mockImplementation((open, deadline) => { deadlines.push(deadline); return original(open, deadline); });
+    try {
+      await expect(f.list()).rejects.toBeInstanceOf(PiMetadataBusy);
+      expect(reads).toBe(2);
+      expect(deadlines).toEqual([PI_READ_DEADLINE_MS, PI_READ_DEADLINE_MS]);
+      expect(f.reader.size()).toEqual({ active: 0, waiting: 0 });
+    } finally {
+      f.reader.close();
+      await f.reader.idle();
+      requested.mockRestore();
+      clock.mockRestore();
+      jest.useRealTimers();
+    }
   });
 
   for (const reason of ["shutdown", "deadline"] as const) {
@@ -505,6 +647,24 @@ describe("Pi fresh streaming reader", () => {
     }
   });
 
+  it("does not admit a foreign Windows cwd through a clipped header prefix", async () => {
+    const f = fixture();
+    const cwd = "C:\\work\\project";
+    const folder = join(f.stores.env.PI_CODING_AGENT_SESSION_DIR, piSessionFolder(cwd, "win32"));
+    mkdirSync(folder, { recursive: true });
+    const file = join(folder, "windows.jsonl");
+    const list = () => listSessions("pi", cwd, { ...f.stores, platform: "win32", realpath: (path) => path });
+    const padded = cwd + "\\".repeat(16384 - cwd.length);
+    writeFileSync(file, header("windows", padded));
+    expect((await list())[0]?.id).toBe("windows");
+    for (const recorded of [padded + "other", padded + "\\"]) {
+      const body = header("windows", recorded);
+      expect(Buffer.byteLength(body)).toBeLessThan(64 * 1024);
+      writeFileSync(file, body);
+      expect(await list()).toEqual([]);
+    }
+  });
+
   it("discards a file mutated during a scan and refuses expired work before opening a descriptor", async () => {
     let mutate = true;
     const f = fixture({ read: async (fd, buffer, length, position) => {
@@ -521,11 +681,12 @@ describe("Pi fresh streaming reader", () => {
 
   it("keeps a server responsive during a fresh 20 MiB listing and reads the file again on the next request", async () => {
     const scanning = Promise.withResolvers<void>();
+    const release = ioGate();
     let bytes = 0;
-    const f = fixture({ read: (fd, buffer, length, position) => new Promise((done, fail) => {
-      scanning.resolve();
-      read(fd, buffer, 0, length, position, (error, count) => { bytes += count; if (error) fail(error); else done(count); });
-    }) });
+    const f = fixture({ read: async (fd, buffer, length, position) => {
+      if (position === 0) { scanning.resolve(); await release.promise; }
+      return new Promise((done, fail) => read(fd, buffer, 0, length, position, (error, count) => { bytes += count; if (error) fail(error); else done(count); }));
+    } });
     writeFileSync(f.file, header());
     // Synthetic transcript, built in small writes rather than one giant test allocation.
     const block = filler(1024 * 1024);
@@ -536,14 +697,16 @@ describe("Pi fresh streaming reader", () => {
       const url = new URL(request.url);
       return url.pathname === "/ping" ? new Response("pong") : handleSessionHistoryRequest(request, url, { readOnly: false, stores: f.stores, snapshot });
     } });
+    const origin = `http://127.0.0.1:${server.port}`;
+    const url = `${origin}/api/sessions/history?workspace_id=w&agent=pi`;
+    const listing = fetch(url);
+    const outcome = listing.catch((error: unknown) => error);
     try {
-      const origin = `http://127.0.0.1:${server.port}`;
-      const url = `${origin}/api/sessions/history?workspace_id=w&agent=pi`;
-      const listing = fetch(url);
       await scanning.promise;
       expect(f.reader.size().active).toBeGreaterThan(0);
       expect(await (await fetch(`${origin}/ping`)).text()).toBe("pong");
-      expect(bytes).toBeLessThan(statSync(f.file).size);
+      expect(bytes).toBe(0);
+      release.resolve();
       const first = await listing;
       expect(first.status).toBe(200);
       expect(first.headers.get("cache-control")).toBe("no-store");
@@ -555,6 +718,12 @@ describe("Pi fresh streaming reader", () => {
       expect(second.status).toBe(200);
       expect(((await second.json()) as SessionHistoryResponse).sessions).toEqual(rows);
       expect(bytes).toBe(2 * size);
-    } finally { server.stop(true); }
+    } finally {
+      f.reader.close();
+      release.resolve();
+      server.stop(true);
+      await outcome;
+      await f.reader.idle();
+    }
   }, 30_000);
 });
