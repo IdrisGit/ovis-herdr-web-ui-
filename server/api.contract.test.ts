@@ -4781,7 +4781,9 @@ describe("GET /api/sessions/history", () => {
       expect(rows.map((row) => row.id)).toEqual(Array.from({ length: 50 }, (_, n) => `long-${201 - n}`));
       expect(rows.every((row, n) => row.title === `Synthetic session ${201 - n}` && row.firstMessage === `Synthetic prompt ${201 - n}`)).toBe(true);
       // Reopening must scan again and notice a later name, not reuse the completed answer.
-      appendFileSync(join(dirname(file), "201.jsonl"), line({ type: "session_info", name: "Freshly renamed" }));
+      const renamed = join(dirname(file), "201.jsonl");
+      appendFileSync(renamed, line({ type: "session_info", name: "Freshly renamed" }));
+      utimesSync(renamed, 1_790_000_202, 1_790_000_202);
       expect((await listing())[0]).toMatchObject({ id: "long-201", title: "Freshly renamed", resume: { argv: ["pi", "--session", "long-201"] } });
     });
   }, 20_000);

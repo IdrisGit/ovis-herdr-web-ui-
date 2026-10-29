@@ -185,11 +185,13 @@ try {
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   appendFileSync(piNamed, piLine({ type: "session_info", name: "Renamed Pi" }));
+  utimesSync(piNamed, 1_790_000_003, 1_790_000_003);
   await openPi();
   assert.equal(await dialog.locator(".session-title").first().textContent(), "Renamed Pi");
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   appendFileSync(piNamed, piLine({ type: "session_info", name: " " }));
+  utimesSync(piNamed, 1_790_000_004, 1_790_000_004);
   await openPi();
   assert.deepEqual(await dialog.locator(".session-title").allTextContents(), ["Named Pi first prompt", "Late Pi prompt"]);
   assert.equal(await dialog.locator(".session-id").count(), 0);
